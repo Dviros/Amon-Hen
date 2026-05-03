@@ -231,7 +231,6 @@ The production path is Cloudflare Workers:
 - Cloudflare Worker config in [`web/wrangler.jsonc`](web/wrangler.jsonc)
 - Custom domain route for `amonhen.legit.place`
 - `workers_dev` disabled so the Worker is not exposed on the account `workers.dev` subdomain
-- Host guard middleware that returns `404` for any non-`amonhen.legit.place` host
 - Static security headers in [`web/public/_headers`](web/public/_headers)
 
 The GitHub Pages workflow remains available as a static preview path for CI-built artifacts, but it does not own the production custom domain.
