@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.14
+
+- Decode Claude, Codex, and Gemini JSON stream events into readable Studio messages instead of raw provider JSON.
+- Suppress provider hook/session plumbing from the live run log while preserving visible assistant text, tool calls, results, errors, tokens, and progress.
+- Render Codex command execution events as concise shell/tool summaries with output snippets.
+
 ## 0.1.13
 
 - Keep Studio responsive while provider CLIs stream large outputs by reusing the terminal backend instead of rebuilding it every frame.

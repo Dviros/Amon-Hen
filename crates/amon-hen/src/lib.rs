@@ -3357,6 +3357,8 @@ fn provider_stream_line_is_important(line: &str) -> bool {
         "tool_call",
         "functioncall",
         "function_call",
+        "command_execution",
+        "item.completed",
         "\"result\"",
         "\"error\"",
         "error",
@@ -3393,9 +3395,10 @@ fn emit_provider_stream_line(
     let tool_calls = provider
         .map(|provider| extract_tool_usage(provider, line, ""))
         .unwrap_or_default();
-    let visible = provider
-        .and_then(|provider| provider_visible_stream(provider, line))
-        .unwrap_or_else(|| sanitize_status_detail(line));
+    let visible = match provider_visible_stream(provider, line, &tool_calls) {
+        StreamDisplay::Visible(visible) => visible,
+        StreamDisplay::Suppress => return,
+    };
     emit_runtime_event(
         &progress.sink,
         progress.sink.is_none(),
@@ -3419,83 +3422,215 @@ fn emit_provider_stream_line(
     );
 }
 
-fn provider_visible_stream(provider: &str, line: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(line).ok()?;
-    match provider {
+#[derive(Debug, Eq, PartialEq)]
+enum StreamDisplay {
+    Visible(String),
+    Suppress,
+}
+
+fn provider_visible_stream(
+    provider: Option<&str>,
+    line: &str,
+    tool_calls: &[ToolUsage],
+) -> StreamDisplay {
+    let Some(provider) = provider else {
+        return StreamDisplay::Visible(sanitize_status_detail(line));
+    };
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return StreamDisplay::Visible(sanitize_status_detail(line));
+    };
+    let visible = match provider {
         "claude" => claude_visible_stream(&value),
         "gemini" => gemini_visible_stream(&value),
         "codex" => codex_visible_stream(&value),
         _ => None,
     }
+    .or_else(|| tool_calls.first().map(visible_tool_summary));
+    visible
+        .filter(|text| !text.trim().is_empty())
+        .map(StreamDisplay::Visible)
+        .unwrap_or(StreamDisplay::Suppress)
+}
+
+fn visible_tool_summary(tool: &ToolUsage) -> String {
+    let detail = sanitize_status_detail(&tool.detail);
+    if detail.is_empty() {
+        format!("tool {}: {}", tool.status, tool.name)
+    } else {
+        format!("tool {}: {} {}", tool.status, tool.name, detail)
+    }
 }
 
 fn claude_visible_stream(value: &Value) -> Option<String> {
-    if let Some(result) = value.get("result").and_then(Value::as_str) {
+    if let Some(result) = non_empty_str(value.get("result")) {
         return Some(format!("result: {}", sanitize_status_detail(result)));
     }
-    if let Some(status) = value.get("status").and_then(Value::as_str) {
-        return Some(format!("status: {status}"));
-    }
-    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("event");
     if let Some(content) = value.pointer("/message/content").and_then(Value::as_array) {
-        let mut parts = Vec::new();
-        for block in content {
-            match block.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    if let Some(text) = block.get("text").and_then(Value::as_str) {
-                        parts.push(sanitize_status_detail(text));
-                    }
-                }
-                Some("tool_use") => {
-                    let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    parts.push(format!("tool: {name}"));
-                }
-                _ => {}
-            }
-        }
-        if !parts.is_empty() {
-            return Some(parts.join(" | "));
+        if let Some(text) = visible_content_blocks(content) {
+            return Some(text);
         }
     }
-    Some(event_type.to_string())
+    if let Some(delta) = value.pointer("/delta/text").and_then(Value::as_str) {
+        return Some(format!("assistant: {}", sanitize_status_detail(delta)));
+    }
+    if let Some(block) = value.pointer("/content_block") {
+        if let Some(text) = visible_content_block(block) {
+            return Some(text);
+        }
+    }
+    if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Some(format!("error: {}", sanitize_status_detail(error)));
+    }
+    None
 }
 
 fn gemini_visible_stream(value: &Value) -> Option<String> {
-    value
-        .get("response")
+    if let Some(response) = non_empty_str(value.get("response")) {
+        return Some(format!("assistant: {}", sanitize_status_detail(response)));
+    }
+    if let Some(text) = non_empty_str(value.get("text")) {
+        return Some(format!("assistant: {}", sanitize_status_detail(text)));
+    }
+    if let Some(text) = value
+        .pointer("/candidates/0/content/parts/0/text")
         .and_then(Value::as_str)
-        .map(sanitize_status_detail)
-        .or_else(|| {
-            value
-                .get("text")
-                .and_then(Value::as_str)
-                .map(sanitize_status_detail)
-        })
-        .or_else(|| {
-            value
-                .get("type")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-        })
+        .filter(|text| !text.trim().is_empty())
+    {
+        return Some(format!("assistant: {}", sanitize_status_detail(text)));
+    }
+    if let Some(call) = value
+        .pointer("/functionCall")
+        .or_else(|| value.pointer("/candidates/0/content/parts/0/functionCall"))
+    {
+        return Some(format!("tool: {}", function_call_summary(call)));
+    }
+    if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Some(format!("error: {}", sanitize_status_detail(error)));
+    }
+    None
 }
 
 fn codex_visible_stream(value: &Value) -> Option<String> {
-    value
-        .get("message")
+    if let Some(message) = non_empty_str(value.get("message")) {
+        return Some(format!("assistant: {}", sanitize_status_detail(message)));
+    }
+    if let Some(text) = non_empty_str(value.get("text")) {
+        return Some(format!("assistant: {}", sanitize_status_detail(text)));
+    }
+    if let Some(item) = value.get("item") {
+        return codex_visible_item(item);
+    }
+    if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Some(format!("error: {}", sanitize_status_detail(error)));
+    }
+    None
+}
+
+fn codex_visible_item(item: &Value) -> Option<String> {
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
+    match item_type {
+        "message" => codex_message_text(item),
+        "command_execution" => {
+            let command = item
+                .get("command")
+                .and_then(Value::as_str)
+                .map(sanitize_status_detail)
+                .unwrap_or_else(|| "command".to_string());
+            let output = item
+                .get("aggregated_output")
+                .or_else(|| item.get("output"))
+                .and_then(Value::as_str)
+                .map(sanitize_status_detail)
+                .unwrap_or_default();
+            if output.trim().is_empty() {
+                Some(format!("tool: shell {command}"))
+            } else {
+                Some(format!(
+                    "tool: shell {command} -> {}",
+                    truncate(&output, 140)
+                ))
+            }
+        }
+        "function_call" | "tool_call" => Some(format!("tool: {}", function_call_summary(item))),
+        "error" => item
+            .get("message")
+            .and_then(Value::as_str)
+            .map(|message| format!("error: {}", sanitize_status_detail(message))),
+        "reasoning" => item
+            .get("summary")
+            .and_then(Value::as_str)
+            .filter(|summary| !summary.trim().is_empty())
+            .map(|summary| format!("reasoning summary: {}", sanitize_status_detail(summary))),
+        _ => None,
+    }
+}
+
+fn codex_message_text(item: &Value) -> Option<String> {
+    if let Some(text) = non_empty_str(item.get("text")) {
+        return Some(sanitize_status_detail(text));
+    }
+    item.get("content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| visible_content_blocks(blocks))
+}
+
+fn visible_content_blocks(blocks: &[Value]) -> Option<String> {
+    let parts = blocks
+        .iter()
+        .filter_map(visible_content_block)
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join(" | "))
+}
+
+fn visible_content_block(block: &Value) -> Option<String> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") | Some("output_text") => non_empty_str(block.get("text"))
+            .map(|text| format!("assistant: {}", sanitize_status_detail(text))),
+        Some("tool_use") => {
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let input = block
+                .get("input")
+                .map(short_json_detail)
+                .unwrap_or_default();
+            if input.is_empty() {
+                Some(format!("tool: {name}"))
+            } else {
+                Some(format!("tool: {name} {}", truncate(&input, 140)))
+            }
+        }
+        Some("function_call") | Some("tool_call") => {
+            Some(format!("tool: {}", function_call_summary(block)))
+        }
+        _ => non_empty_str(block.get("text"))
+            .map(|text| format!("assistant: {}", sanitize_status_detail(text))),
+    }
+}
+
+fn function_call_summary(value: &Value) -> String {
+    let name = value
+        .get("name")
+        .or_else(|| value.get("tool"))
+        .or_else(|| value.get("function"))
         .and_then(Value::as_str)
-        .map(sanitize_status_detail)
-        .or_else(|| {
-            value
-                .get("event")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-        })
-        .or_else(|| {
-            value
-                .get("type")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-        })
+        .unwrap_or("tool");
+    let args = value
+        .get("args")
+        .or_else(|| value.get("arguments"))
+        .or_else(|| value.get("input"))
+        .map(short_json_detail)
+        .unwrap_or_default();
+    if args.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {}", truncate(&args, 140))
+    }
+}
+
+fn non_empty_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
 }
 
 fn finalize_engine(
@@ -4811,6 +4946,47 @@ mod tests {
     }
 
     #[test]
+    fn provider_stream_json_renders_readable_messages() {
+        let claude = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Inspecting the truth predicates now."},{"type":"tool_use","name":"Bash","input":{"command":"git status -sb"}}]}}"#;
+        let codex = r#"{"type":"item.completed","item":{"id":"item_13","type":"command_execution","command":"/bin/bash -lc 'sed -n 1,40p execution/live_router.py'","aggregated_output":"def route_order():\n    pass\n"}}"#;
+        let gemini = r#"{"candidates":[{"content":{"parts":[{"text":"Gate waterfall evidence is still thin."}]}}]}"#;
+
+        assert_eq!(
+            provider_visible_stream(Some("claude"), claude, &[]),
+            StreamDisplay::Visible(
+                "assistant: Inspecting the truth predicates now. | tool: Bash {\"command\":\"git status -sb\"}"
+                    .to_string()
+            )
+        );
+        let codex_visible = match provider_visible_stream(Some("codex"), codex, &[]) {
+            StreamDisplay::Visible(text) => text,
+            StreamDisplay::Suppress => panic!("codex command event should be visible"),
+        };
+        assert!(codex_visible.contains("tool: shell"));
+        assert!(codex_visible.contains("execution/live_router.py"));
+        assert!(!codex_visible.contains("\"type\":\"item.completed\""));
+        assert_eq!(
+            provider_visible_stream(Some("gemini"), gemini, &[]),
+            StreamDisplay::Visible("assistant: Gate waterfall evidence is still thin.".to_string())
+        );
+    }
+
+    #[test]
+    fn provider_stream_json_suppresses_session_plumbing() {
+        let claude_hook = r#"{"type":"system","subtype":"hook_response","hook_name":"SessionStart:startup","output":"noise"}"#;
+        let codex_session = r#"{"type":"session.started","session_id":"abc"}"#;
+
+        assert_eq!(
+            provider_visible_stream(Some("claude"), claude_hook, &[]),
+            StreamDisplay::Suppress
+        );
+        assert_eq!(
+            provider_visible_stream(Some("codex"), codex_session, &[]),
+            StreamDisplay::Suppress
+        );
+    }
+
+    #[test]
     fn builds_real_sub_agent_handoff_prompt() {
         let agent = EngineResult {
             name: "codex".to_string(),
@@ -5221,6 +5397,43 @@ mod tests {
         assert!(events.iter().any(|event| {
             event.kind == RuntimeEventKind::ToolUsage
                 && event.tool_calls.iter().any(|tool| tool.name == "Bash")
+        }));
+    }
+
+    #[test]
+    fn command_stream_decodes_provider_json_before_dashboard_events() {
+        if !command_available("sh") {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress: ProgressSink = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        });
+        let args = [
+            "-c".to_string(),
+            "printf '%s\\n' '{\"type\":\"session.started\",\"session_id\":\"abc\"}'; printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"id\":\"item_13\",\"type\":\"command_execution\",\"command\":\"/bin/bash -lc sed\",\"aggregated_output\":\"line one\"}}'"
+                .to_string(),
+        ];
+
+        let result = run_command(CommandRequest::new("sh", &args, &cwd, 5_000).progress(Some(
+            CommandProgress {
+                label: "codex executor iteration 1/1".to_string(),
+                sink: Some(progress),
+                input_tokens: 10,
+            },
+        )));
+
+        assert_eq!(result.code, Some(0));
+        let events = events.lock().unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.message.contains("session.started")));
+        assert!(events.iter().any(|event| {
+            event.message.contains("tool: shell")
+                && event.message.contains("line one")
+                && !event.message.contains("\"type\":\"item.completed\"")
         }));
     }
 
