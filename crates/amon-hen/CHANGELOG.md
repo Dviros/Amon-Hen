@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.11
+
+- Added a real runtime event bus and true `--json-stream` NDJSON progress events, including ordered provider, token/tool, iteration, and final result events.
+- Preserved full iteration and sub-agent timelines in the result model while keeping final member and summary fields compatible.
+- Converted Studio auth, capability, Linear status, and Linear delivery actions into in-dashboard async jobs with cancellation plumbing, persistent profiles, and provider health/onboarding details.
+- Strengthened Linear delivery with deterministic gates for repo changes, secret/local-path scans, validation command capture, PR/CI evidence, blocked/no-op outcomes, and retry reconciliation.
+- Added CLI regression coverage proving planner, lead, executor, provider settings, iterations, handoff, and sub-agent roles reach the correct provider options and prompts.
+
 ## 0.1.10
 
 - Reworked Studio runs into an in-dashboard async job loop instead of leaving alternate-screen mode and blocking the terminal.

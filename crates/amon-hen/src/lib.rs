@@ -6,8 +6,11 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::process::{Child, Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -362,6 +365,7 @@ pub struct AmonHenResult {
     summarizer_requested: String,
     workflow: Workflow,
     prompt_commands: Vec<CommandTelemetry>,
+    iterations: Vec<IterationRecord>,
     members: Vec<EngineResult>,
     summary: EngineResult,
 }
@@ -374,6 +378,20 @@ struct Workflow {
     iterations: usize,
     team_work: usize,
     teams: HashMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct IterationRecord {
+    iteration: usize,
+    total_iterations: usize,
+    status: String,
+    duration_ms: u128,
+    members: Vec<EngineResult>,
+    sub_agents: Vec<EngineResult>,
+    handoff_context: Option<String>,
+    summary_context: Option<String>,
+    token_usage: TokenUsage,
+    tool_calls: Vec<ToolUsage>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -426,7 +444,8 @@ struct CommandTelemetry {
     timed_out: bool,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum ProgressStage {
     Context,
     Start,
@@ -435,16 +454,55 @@ enum ProgressStage {
     Done,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeEventKind {
+    Context,
+    Iteration,
+    Provider,
+    TokenUsage,
+    ToolUsage,
+    Result,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct ProgressEvent {
+    kind: RuntimeEventKind,
     provider: Option<String>,
     role: Option<String>,
     stage: ProgressStage,
     status: Option<String>,
+    iteration: Option<usize>,
+    total_iterations: Option<usize>,
+    is_sub_agent: bool,
+    duration_ms: Option<u128>,
+    token_usage: Option<TokenUsage>,
+    tool_calls: Vec<ToolUsage>,
     message: String,
 }
 
 type ProgressSink = Arc<dyn Fn(ProgressEvent) + Send + Sync + 'static>;
+type RuntimeEventSink = Arc<dyn Fn(RuntimeEvent) + Send + Sync + 'static>;
+
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeEvent {
+    sequence: u64,
+    elapsed_ms: u128,
+    #[serde(flatten)]
+    progress: ProgressEvent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Box<AmonHenResult>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "linearResult")]
+    linear_result: Option<Box<linear_delivery::LinearDeliveryResult>>,
+}
+
+#[derive(Clone)]
+struct RuntimeEventBus {
+    started: Instant,
+    sequence: Arc<AtomicU64>,
+    emit_lock: Arc<Mutex<()>>,
+    sinks: Arc<Mutex<Vec<RuntimeEventSink>>>,
+}
 
 #[derive(Debug)]
 struct PromptContext {
@@ -460,6 +518,7 @@ struct CommandResult {
     stdout: String,
     stderr: String,
     timed_out: bool,
+    cancelled: bool,
     error: Option<String>,
     timeout_ms: u64,
     duration_ms: u128,
@@ -469,6 +528,52 @@ struct CommandResult {
 struct CommandProgress {
     label: String,
     sink: Option<ProgressSink>,
+}
+
+struct CommandRequest<'a> {
+    command: &'a str,
+    args: &'a [String],
+    cwd: &'a Path,
+    stdin_text: Option<&'a str>,
+    timeout_ms: u64,
+    envs: HashMap<String, String>,
+    progress: Option<CommandProgress>,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+impl<'a> CommandRequest<'a> {
+    fn new(command: &'a str, args: &'a [String], cwd: &'a Path, timeout_ms: u64) -> Self {
+        Self {
+            command,
+            args,
+            cwd,
+            stdin_text: None,
+            timeout_ms,
+            envs: HashMap::new(),
+            progress: None,
+            cancel: None,
+        }
+    }
+
+    fn stdin_text(mut self, stdin_text: Option<&'a str>) -> Self {
+        self.stdin_text = stdin_text;
+        self
+    }
+
+    fn envs(mut self, envs: HashMap<String, String>) -> Self {
+        self.envs = envs;
+        self
+    }
+
+    fn progress(mut self, progress: Option<CommandProgress>) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    fn cancel(mut self, cancel: Option<Arc<AtomicBool>>) -> Self {
+        self.cancel = cancel;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -488,6 +593,28 @@ struct EngineRunOptions {
     is_sub_agent: bool,
     live: bool,
     progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+struct EngineOptionsInput<'a> {
+    member: &'a str,
+    prompt: String,
+    role: &'a str,
+    iteration: usize,
+    workflow: &'a Workflow,
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+struct MemberPromptInput<'a> {
+    query: &'a str,
+    role: &'a str,
+    workflow: &'a Workflow,
+    iteration: usize,
+    team_size: usize,
+    previous_iteration: &'a [EngineResult],
+    handoff_results: &'a [EngineResult],
+    plan_output: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -586,6 +713,20 @@ where
         return studio::run_studio(&resolved);
     }
 
+    let event_bus = resolved.raw.json_stream.then(RuntimeEventBus::new);
+    if let Some(bus) = &event_bus {
+        let stdout_lock = Arc::new(Mutex::new(()));
+        bus.add_sink(Arc::new(move |event| {
+            let Ok(line) = serde_json::to_string(&event) else {
+                return;
+            };
+            let _guard = stdout_lock.lock().ok();
+            println!("{line}");
+            let _ = io::stdout().flush();
+        }));
+    }
+    let progress = event_bus.as_ref().map(RuntimeEventBus::progress_sink);
+
     if resolved.raw.auth_status {
         println!(
             "{}",
@@ -637,12 +778,20 @@ where
     }
 
     if linear_delivery_requested(&resolved.raw) {
-        match linear_delivery::run_linear_delivery(&resolved) {
+        match linear_delivery::run_linear_delivery_with_progress(&resolved, progress.clone(), None)
+        {
             Ok(result) => {
-                println!(
-                    "{}",
-                    linear_delivery::render_linear_delivery_result(&result)
-                );
+                if let Some(bus) = &event_bus {
+                    bus.emit_linear_result(&result);
+                } else if resolved.raw.json {
+                    let serialized = serde_json::to_string_pretty(&result);
+                    println!("{}", serialized.unwrap_or_else(|_| "{}".to_string()));
+                } else {
+                    println!(
+                        "{}",
+                        linear_delivery::render_linear_delivery_result(&result)
+                    );
+                }
                 return if result.success { 0 } else { 1 };
             }
             Err(error) => {
@@ -657,7 +806,7 @@ where
         return 64;
     }
 
-    let prompt_context = match build_prompt_context(&resolved) {
+    let prompt_context = match build_prompt_context_with_progress(&resolved, progress.clone()) {
         Ok(context) => context,
         Err(error) => {
             eprintln!("{error}");
@@ -669,13 +818,16 @@ where
         eprintln!("{}", render_banner());
     }
 
-    let result = run_amon_hen(&resolved, prompt_context.prompt, prompt_context.commands);
-    if resolved.raw.json || resolved.raw.json_stream {
-        let serialized = if resolved.raw.json_stream {
-            serde_json::to_string(&result)
-        } else {
-            serde_json::to_string_pretty(&result)
-        };
+    let result = run_amon_hen_with_progress(
+        &resolved,
+        prompt_context.prompt,
+        prompt_context.commands,
+        progress,
+    );
+    if let Some(bus) = &event_bus {
+        bus.emit_result(&result);
+    } else if resolved.raw.json {
+        let serialized = serde_json::to_string_pretty(&result);
         println!("{}", serialized.unwrap_or_else(|_| "{}".to_string()));
     } else {
         println!("{}", render_human_result(&result, resolved.raw.verbose));
@@ -933,7 +1085,8 @@ fn resolve_members(raw: &CliArgs) -> Result<Vec<String>, String> {
         }
     }
 
-    members.dedup();
+    let mut seen = HashSet::new();
+    members.retain(|member| seen.insert(member.clone()));
     for member in &members {
         validate_engine_name(member, false, "--members")?;
     }
@@ -982,20 +1135,47 @@ fn validate_choice(flag: &str, value: &str, allowed: &[&str]) -> Result<(), Stri
 }
 
 fn collect_auth_statuses(resolved: &ResolvedArgs) -> Vec<ProviderAuthStatus> {
+    collect_auth_statuses_with_cancel(resolved, None)
+}
+
+fn collect_auth_statuses_with_cancel(
+    resolved: &ResolvedArgs,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Vec<ProviderAuthStatus> {
     resolved
         .members
         .iter()
-        .map(|provider| provider_auth_status(provider, resolved))
+        .map(|provider| provider_auth_status_with_cancel(provider, resolved, cancel.clone()))
         .collect()
 }
 
 fn provider_auth_status(provider: &str, resolved: &ResolvedArgs) -> ProviderAuthStatus {
+    provider_auth_status_with_cancel(provider, resolved, None)
+}
+
+fn provider_auth_status_with_cancel(
+    provider: &str,
+    resolved: &ResolvedArgs,
+    cancel: Option<Arc<AtomicBool>>,
+) -> ProviderAuthStatus {
     let auth = provider_auth(resolved, provider);
+    if cancel
+        .as_ref()
+        .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+    {
+        return ProviderAuthStatus {
+            provider: provider.to_string(),
+            configured: false,
+            status: "cancelled".to_string(),
+            source: auth,
+            detail: "Auth status refresh cancelled.".to_string(),
+        };
+    }
     match provider {
         "codex" => {
             let bin = resolve_binary("codex");
             let args = vec!["login".to_string(), "status".to_string()];
-            status_from_command(provider, &auth, &bin, &args, &resolved.cwd)
+            status_from_command(provider, &auth, &bin, &args, &resolved.cwd, cancel)
         }
         "claude" => {
             let bin = resolve_binary("claude");
@@ -1004,7 +1184,7 @@ fn provider_auth_status(provider: &str, resolved: &ResolvedArgs) -> ProviderAuth
                 "status".to_string(),
                 "--text".to_string(),
             ];
-            status_from_command(provider, &auth, &bin, &args, &resolved.cwd)
+            status_from_command(provider, &auth, &bin, &args, &resolved.cwd, cancel)
         }
         "gemini" => {
             let has_api_key = std::env::var("GEMINI_API_KEY")
@@ -1050,14 +1230,17 @@ fn status_from_command(
     bin: &str,
     args: &[String],
     cwd: &Path,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> ProviderAuthStatus {
-    let result = run_command(bin, args, cwd, None, 15_000, HashMap::new(), None);
+    let result = run_command(CommandRequest::new(bin, args, cwd, 15_000).cancel(cancel));
     let configured = result.code == Some(0);
     ProviderAuthStatus {
         provider: provider.to_string(),
         configured,
         status: if configured {
             "configured"
+        } else if result.cancelled {
+            "cancelled"
         } else if result.error.is_some() {
             "missing-cli"
         } else {
@@ -1144,18 +1327,29 @@ fn render_auth_statuses(statuses: &[ProviderAuthStatus]) -> String {
 }
 
 fn collect_provider_capability_statuses(resolved: &ResolvedArgs) -> Vec<ProviderCapabilityStatus> {
+    collect_provider_capability_statuses_with_cancel(resolved, None)
+}
+
+fn collect_provider_capability_statuses_with_cancel(
+    resolved: &ResolvedArgs,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Vec<ProviderCapabilityStatus> {
     resolved
         .members
         .iter()
-        .map(|provider| provider_capability_status(provider, resolved))
+        .map(|provider| provider_capability_status(provider, resolved, cancel.clone()))
         .collect()
 }
 
-fn provider_capability_status(provider: &str, resolved: &ResolvedArgs) -> ProviderCapabilityStatus {
+fn provider_capability_status(
+    provider: &str,
+    resolved: &ResolvedArgs,
+    cancel: Option<Arc<AtomicBool>>,
+) -> ProviderCapabilityStatus {
     match provider {
         "codex" => {
             let bin = resolve_binary("codex");
-            let mcp = run_capability_probe(&bin, &["mcp", "list"], &resolved.cwd);
+            let mcp = run_capability_probe(&bin, &["mcp", "list"], &resolved.cwd, cancel.clone());
             ProviderCapabilityStatus {
                 provider: provider.to_string(),
                 mcp,
@@ -1164,6 +1358,7 @@ fn provider_capability_status(provider: &str, resolved: &ResolvedArgs) -> Provid
                     &bin,
                     &["plugin", "marketplace", "--help"],
                     &resolved.cwd,
+                    cancel,
                 )),
                 detail:
                     "Codex inherits ~/.codex config unless --codex-capabilities override is set."
@@ -1174,9 +1369,19 @@ fn provider_capability_status(provider: &str, resolved: &ResolvedArgs) -> Provid
             let bin = resolve_binary("claude");
             ProviderCapabilityStatus {
                 provider: provider.to_string(),
-                mcp: run_capability_probe(&bin, &["mcp", "list"], &resolved.cwd),
-                skills: Some(run_capability_probe(&bin, &["plugin", "list"], &resolved.cwd)),
-                tools: Some(run_capability_probe(&bin, &["agents"], &resolved.cwd)),
+                mcp: run_capability_probe(&bin, &["mcp", "list"], &resolved.cwd, cancel.clone()),
+                skills: Some(run_capability_probe(
+                    &bin,
+                    &["plugin", "list"],
+                    &resolved.cwd,
+                    cancel.clone(),
+                )),
+                tools: Some(run_capability_probe(
+                    &bin,
+                    &["agents"],
+                    &resolved.cwd,
+                    cancel,
+                )),
                 detail: "Claude override can manage MCP config, tools, agents, plugin dirs, and slash-command skills.".to_string(),
             }
         }
@@ -1184,9 +1389,19 @@ fn provider_capability_status(provider: &str, resolved: &ResolvedArgs) -> Provid
             let bin = resolve_binary("gemini");
             ProviderCapabilityStatus {
                 provider: provider.to_string(),
-                mcp: run_capability_probe(&bin, &["mcp", "list"], &resolved.cwd),
-                skills: Some(run_capability_probe(&bin, &["skills", "list"], &resolved.cwd)),
-                tools: Some(run_capability_probe(&bin, &["extensions", "list"], &resolved.cwd)),
+                mcp: run_capability_probe(&bin, &["mcp", "list"], &resolved.cwd, cancel.clone()),
+                skills: Some(run_capability_probe(
+                    &bin,
+                    &["skills", "list"],
+                    &resolved.cwd,
+                    cancel.clone(),
+                )),
+                tools: Some(run_capability_probe(
+                    &bin,
+                    &["extensions", "list"],
+                    &resolved.cwd,
+                    cancel,
+                )),
                 detail: "Gemini override can manage settings, extensions, MCP server allowlists, and policy files.".to_string(),
             }
         }
@@ -1209,19 +1424,18 @@ fn provider_capability_status(provider: &str, resolved: &ResolvedArgs) -> Provid
     }
 }
 
-fn run_capability_probe(bin: &str, args: &[&str], cwd: &Path) -> CommandTelemetry {
+fn run_capability_probe(
+    bin: &str,
+    args: &[&str],
+    cwd: &Path,
+    cancel: Option<Arc<AtomicBool>>,
+) -> CommandTelemetry {
     let args = args
         .iter()
         .map(|arg| (*arg).to_string())
         .collect::<Vec<_>>();
     command_telemetry(&run_command(
-        bin,
-        &args,
-        cwd,
-        None,
-        20_000,
-        HashMap::new(),
-        None,
+        CommandRequest::new(bin, &args, cwd, 20_000).cancel(cancel),
     ))
 }
 
@@ -1237,6 +1451,95 @@ fn emit_runtime_event(
     }
 }
 
+impl RuntimeEventBus {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            sequence: Arc::new(AtomicU64::new(1)),
+            emit_lock: Arc::new(Mutex::new(())),
+            sinks: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn add_sink(&self, sink: RuntimeEventSink) {
+        if let Ok(mut sinks) = self.sinks.lock() {
+            sinks.push(sink);
+        }
+    }
+
+    fn progress_sink(&self) -> ProgressSink {
+        let bus = self.clone();
+        Arc::new(move |event| bus.emit(event, None, None))
+    }
+
+    fn emit_result(&self, result: &AmonHenResult) {
+        let status = if is_success(result) { "ok" } else { "error" };
+        self.emit(
+            ProgressEvent {
+                kind: RuntimeEventKind::Result,
+                provider: Some(result.summary.name.clone()),
+                role: Some(result.summary.role.clone()),
+                stage: ProgressStage::Done,
+                status: Some(status.to_string()),
+                iteration: Some(result.workflow.iterations),
+                total_iterations: Some(result.workflow.iterations),
+                is_sub_agent: false,
+                duration_ms: Some(result.summary.duration_ms),
+                token_usage: Some(result.summary.token_usage.clone()),
+                tool_calls: result.summary.tool_calls.clone(),
+                message: format!("[amon-hen] result {status}"),
+            },
+            Some(Box::new(result.clone())),
+            None,
+        );
+    }
+
+    fn emit_linear_result(&self, result: &linear_delivery::LinearDeliveryResult) {
+        let status = if result.success { "ok" } else { "error" };
+        self.emit(
+            progress_event_with_context(
+                Some("linear"),
+                Some("delivery"),
+                ProgressStage::Done,
+                Some(status),
+                None,
+                None,
+                false,
+                Some(result.duration_ms),
+                None,
+                vec![],
+                format!("[amon-hen] linear delivery {status}"),
+            ),
+            None,
+            Some(Box::new(result.clone())),
+        );
+    }
+
+    fn emit(
+        &self,
+        progress: ProgressEvent,
+        result: Option<Box<AmonHenResult>>,
+        linear_result: Option<Box<linear_delivery::LinearDeliveryResult>>,
+    ) {
+        let _emit_guard = self.emit_lock.lock().ok();
+        let event = RuntimeEvent {
+            sequence: self.sequence.fetch_add(1, Ordering::SeqCst),
+            elapsed_ms: self.started.elapsed().as_millis(),
+            progress,
+            result,
+            linear_result,
+        };
+        let sinks = self
+            .sinks
+            .lock()
+            .map(|sinks| sinks.clone())
+            .unwrap_or_default();
+        for sink in sinks {
+            sink(event.clone());
+        }
+    }
+}
+
 fn progress_event(
     provider: Option<&str>,
     role: Option<&str>,
@@ -1244,12 +1547,67 @@ fn progress_event(
     status: Option<&str>,
     message: impl Into<String>,
 ) -> ProgressEvent {
+    progress_event_with_context(
+        provider,
+        role,
+        stage,
+        status,
+        None,
+        None,
+        false,
+        None,
+        None,
+        vec![],
+        message,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn progress_event_with_context(
+    provider: Option<&str>,
+    role: Option<&str>,
+    stage: ProgressStage,
+    status: Option<&str>,
+    iteration: Option<usize>,
+    total_iterations: Option<usize>,
+    is_sub_agent: bool,
+    duration_ms: Option<u128>,
+    token_usage: Option<TokenUsage>,
+    tool_calls: Vec<ToolUsage>,
+    message: impl Into<String>,
+) -> ProgressEvent {
     ProgressEvent {
+        kind: runtime_event_kind(provider, stage, token_usage.as_ref(), &tool_calls),
         provider: provider.map(ToString::to_string),
         role: role.map(ToString::to_string),
         stage,
         status: status.map(ToString::to_string),
+        iteration,
+        total_iterations,
+        is_sub_agent,
+        duration_ms,
+        token_usage,
+        tool_calls,
         message: message.into(),
+    }
+}
+
+fn runtime_event_kind(
+    provider: Option<&str>,
+    stage: ProgressStage,
+    token_usage: Option<&TokenUsage>,
+    tool_calls: &[ToolUsage],
+) -> RuntimeEventKind {
+    if !tool_calls.is_empty() {
+        RuntimeEventKind::ToolUsage
+    } else if token_usage.is_some() {
+        RuntimeEventKind::TokenUsage
+    } else if provider.is_some() {
+        RuntimeEventKind::Provider
+    } else if matches!(stage, ProgressStage::Context) {
+        RuntimeEventKind::Context
+    } else {
+        RuntimeEventKind::Iteration
     }
 }
 
@@ -1372,14 +1730,15 @@ fn run_interactive_auth_command(
     provider: &str,
 ) -> CommandResult {
     let started = Instant::now();
-    let mut child = match Command::new(command)
+    let mut process = Command::new(command);
+    process
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    configure_process_group(&mut process);
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
             return CommandResult {
@@ -1389,6 +1748,7 @@ fn run_interactive_auth_command(
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
                 error: Some(error.to_string()),
                 timeout_ms,
                 duration_ms: started.elapsed().as_millis(),
@@ -1427,7 +1787,7 @@ fn run_interactive_auth_command(
             Ok(None) => {
                 if timeout_ms > 0 && started.elapsed() >= timeout {
                     timed_out = true;
-                    let _ = child.kill();
+                    terminate_child_tree(&mut child);
                     let status = child.wait().ok();
                     code = status.and_then(|status| status.code());
                     break;
@@ -1442,6 +1802,7 @@ fn run_interactive_auth_command(
                     stdout: String::new(),
                     stderr: String::new(),
                     timed_out,
+                    cancelled: false,
                     error: Some(error.to_string()),
                     timeout_ms,
                     duration_ms: started.elapsed().as_millis(),
@@ -1461,6 +1822,7 @@ fn run_interactive_auth_command(
             .and_then(|handle| handle.join().ok())
             .unwrap_or_default(),
         timed_out,
+        cancelled: false,
         error: None,
         timeout_ms,
         duration_ms: started.elapsed().as_millis(),
@@ -1562,10 +1924,6 @@ fn open_browser_url(url: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn build_prompt_context(resolved: &ResolvedArgs) -> Result<PromptContext, String> {
-    build_prompt_context_with_progress(resolved, None)
-}
-
 fn build_prompt_context_with_progress(
     resolved: &ResolvedArgs,
     progress: Option<ProgressSink>,
@@ -1606,31 +1964,24 @@ fn build_prompt_context_with_progress(
             ),
         );
         let result = run_command(
-            shell,
-            &args,
-            &resolved.cwd,
-            None,
-            resolved.raw.timeout * 1000,
-            HashMap::new(),
-            command_progress(live_label.as_deref(), progress.clone()),
+            CommandRequest::new(shell, &args, &resolved.cwd, resolved.raw.timeout * 1000)
+                .progress(command_progress(live_label.as_deref(), progress.clone())),
         );
         let telemetry = command_telemetry(&result);
-        emit_runtime_event(
-            &progress,
-            false,
-            progress_event(
-                None,
-                None,
-                ProgressStage::Done,
-                Some(&telemetry.status),
-                format!(
-                    "[amon-hen] context command `{}` {} in {:.1}s",
-                    truncate(command, 80),
-                    telemetry.status,
-                    result.duration_ms as f64 / 1000.0
-                ),
+        let mut event = progress_event(
+            None,
+            None,
+            ProgressStage::Done,
+            Some(&telemetry.status),
+            format!(
+                "[amon-hen] context command `{}` {} in {:.1}s",
+                truncate(command, 80),
+                telemetry.status,
+                result.duration_ms as f64 / 1000.0
             ),
         );
+        event.kind = RuntimeEventKind::Context;
+        emit_runtime_event(&progress, false, event);
         commands.push(telemetry);
         sections.push(format!(
             "--- command: {} (exit {}) ---\nstdout:\n{}\nstderr:\n{}",
@@ -1651,33 +2002,45 @@ fn build_prompt_context_with_progress(
     Ok(PromptContext { prompt, commands })
 }
 
-fn run_amon_hen(
-    resolved: &ResolvedArgs,
-    query: String,
-    prompt_commands: Vec<CommandTelemetry>,
-) -> AmonHenResult {
-    run_amon_hen_with_progress(resolved, query, prompt_commands, None)
-}
-
 fn run_amon_hen_with_progress(
     resolved: &ResolvedArgs,
     query: String,
     prompt_commands: Vec<CommandTelemetry>,
     progress: Option<ProgressSink>,
 ) -> AmonHenResult {
+    run_amon_hen_with_progress_and_cancel(resolved, query, prompt_commands, progress, None)
+}
+
+fn run_amon_hen_with_progress_and_cancel(
+    resolved: &ResolvedArgs,
+    query: String,
+    prompt_commands: Vec<CommandTelemetry>,
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> AmonHenResult {
     let workflow = build_workflow(resolved);
     let mut previous_iteration = Vec::new();
     let mut final_members = Vec::new();
+    let mut iterations = Vec::new();
 
     for iteration in 1..=workflow.iterations {
+        let iteration_started = Instant::now();
+        let handoff_context =
+            iteration_handoff_context(&previous_iteration, resolved.raw.max_member_chars);
         emit_runtime_event(
             &progress,
             resolved.raw.verbose,
-            progress_event(
+            progress_event_with_context(
                 None,
                 None,
                 ProgressStage::Start,
                 None,
+                Some(iteration),
+                Some(workflow.iterations),
+                false,
+                None,
+                None,
+                vec![],
                 format!(
                     "[amon-hen] iteration {iteration}/{} started",
                     workflow.iterations
@@ -1691,7 +2054,16 @@ fn run_amon_hen_with_progress(
             iteration,
             &previous_iteration,
             progress.clone(),
+            cancel.clone(),
         );
+        iterations.push(iteration_record(
+            iteration,
+            workflow.iterations,
+            final_members.clone(),
+            iteration_started.elapsed().as_millis(),
+            handoff_context,
+            None,
+        ));
         previous_iteration = final_members.clone();
     }
 
@@ -1723,15 +2095,21 @@ fn run_amon_hen_with_progress(
     } else {
         let summary_prompt =
             build_summary_prompt(&query, &successes, &workflow, resolved.raw.max_member_chars);
+        if let Some(record) = iterations.last_mut() {
+            record.summary_context = Some(truncate(&summary_prompt, resolved.raw.max_member_chars));
+        }
         let summarizer = pick_summarizer(resolved, &successes);
         let mut options = engine_options(
             resolved,
-            &summarizer,
-            summary_prompt,
-            "summary",
-            workflow.iterations,
-            &workflow,
-            progress.clone(),
+            EngineOptionsInput {
+                member: &summarizer,
+                prompt: summary_prompt,
+                role: "summary",
+                iteration: workflow.iterations,
+                workflow: &workflow,
+                progress: progress.clone(),
+                cancel: cancel.clone(),
+            },
         );
         options.role = "summary".to_string();
         options.team_size = 0;
@@ -1745,6 +2123,7 @@ fn run_amon_hen_with_progress(
         summarizer_requested: resolved.raw.summarizer.clone(),
         workflow,
         prompt_commands,
+        iterations,
         members: final_members,
         summary,
     }
@@ -1774,6 +2153,73 @@ fn build_workflow(resolved: &ResolvedArgs) -> Workflow {
     }
 }
 
+fn effective_team_size(workflow: &Workflow, member: &str) -> usize {
+    *workflow.teams.get(member).unwrap_or(&workflow.team_work)
+}
+
+fn iteration_record(
+    iteration: usize,
+    total_iterations: usize,
+    members: Vec<EngineResult>,
+    duration_ms: u128,
+    handoff_context: Option<String>,
+    summary_context: Option<String>,
+) -> IterationRecord {
+    let status = if members.iter().any(|member| member.status == "ok") {
+        "ok"
+    } else if members.iter().any(|member| member.status == "cancelled") {
+        "cancelled"
+    } else if members.iter().any(|member| member.status == "timeout") {
+        "timeout"
+    } else if members.iter().any(|member| member.status == "missing") {
+        "missing"
+    } else {
+        "error"
+    };
+    let sub_agents = members
+        .iter()
+        .flat_map(|member| member.sub_agents.iter().cloned())
+        .collect::<Vec<_>>();
+    let token_usage = aggregate_results_token_usage(members.iter());
+    let tool_calls = members
+        .iter()
+        .chain(sub_agents.iter())
+        .flat_map(|member| member.tool_calls.iter().cloned())
+        .collect::<Vec<_>>();
+    IterationRecord {
+        iteration,
+        total_iterations,
+        status: status.to_string(),
+        duration_ms,
+        members,
+        sub_agents,
+        handoff_context,
+        summary_context,
+        token_usage,
+        tool_calls,
+    }
+}
+
+fn iteration_handoff_context(
+    previous_iteration: &[EngineResult],
+    max_member_chars: usize,
+) -> Option<String> {
+    let context = previous_iteration
+        .iter()
+        .filter(|result| result.status == "ok" && !result.output.trim().is_empty())
+        .map(|result| {
+            format!(
+                "### {} ({})\n{}",
+                result.name,
+                result.role,
+                truncate(result.output.trim(), max_member_chars)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!context.is_empty()).then_some(context)
+}
+
 fn run_iteration(
     resolved: &ResolvedArgs,
     query: &str,
@@ -1781,29 +2227,39 @@ fn run_iteration(
     iteration: usize,
     previous_iteration: &[EngineResult],
     progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<EngineResult> {
-    let ordered = execution_order(&resolved.members, workflow.planner.as_deref());
+    let ordered = execution_order(
+        &resolved.members,
+        workflow.planner.as_deref(),
+        workflow.lead.as_deref(),
+    );
     if workflow.handoff {
         let mut results = Vec::new();
         for member in ordered {
             let role = role_for(&member, workflow);
-            let prompt = build_member_prompt(
+            let team_size = effective_team_size(workflow, &member);
+            let prompt = build_member_prompt(MemberPromptInput {
                 query,
-                &role,
+                role: &role,
                 workflow,
                 iteration,
+                team_size,
                 previous_iteration,
-                &results,
-                "",
-            );
+                handoff_results: &results,
+                plan_output: "",
+            });
             let options = engine_options(
                 resolved,
-                &member,
-                prompt,
-                &role,
-                iteration,
-                workflow,
-                progress.clone(),
+                EngineOptionsInput {
+                    member: &member,
+                    prompt,
+                    role: &role,
+                    iteration,
+                    workflow,
+                    progress: progress.clone(),
+                    cancel: cancel.clone(),
+                },
             );
             results.push(run_engine(&member, options));
         }
@@ -1819,23 +2275,28 @@ fn run_iteration(
     let mut plan_output = String::new();
     if let Some(planner_name) = planner.as_ref() {
         let role = role_for(planner_name, workflow);
-        let prompt = build_member_prompt(
+        let team_size = effective_team_size(workflow, planner_name);
+        let prompt = build_member_prompt(MemberPromptInput {
             query,
-            &role,
+            role: &role,
             workflow,
             iteration,
+            team_size,
             previous_iteration,
-            &[],
-            "",
-        );
+            handoff_results: &[],
+            plan_output: "",
+        });
         let options = engine_options(
             resolved,
-            planner_name,
-            prompt,
-            &role,
-            iteration,
-            workflow,
-            progress.clone(),
+            EngineOptionsInput {
+                member: planner_name,
+                prompt,
+                role: &role,
+                iteration,
+                workflow,
+                progress: progress.clone(),
+                cancel: cancel.clone(),
+            },
         );
         let result = run_engine(planner_name, options);
         if result.status == "ok" {
@@ -1854,6 +2315,7 @@ fn run_iteration(
     let previous_iteration = Arc::new(previous_iteration.to_vec());
     let plan_output = Arc::new(plan_output);
     let progress = Arc::new(progress);
+    let cancel = Arc::new(cancel);
     for member in executors.clone() {
         let tx = tx.clone();
         let resolved = Arc::clone(&resolved);
@@ -1862,25 +2324,31 @@ fn run_iteration(
         let previous_iteration = Arc::clone(&previous_iteration);
         let plan_output = Arc::clone(&plan_output);
         let progress = Arc::clone(&progress);
+        let cancel = Arc::clone(&cancel);
         thread::spawn(move || {
             let role = role_for(&member, &workflow);
-            let prompt = build_member_prompt(
-                &query,
-                &role,
-                &workflow,
+            let team_size = effective_team_size(&workflow, &member);
+            let prompt = build_member_prompt(MemberPromptInput {
+                query: &query,
+                role: &role,
+                workflow: &workflow,
                 iteration,
-                previous_iteration.as_slice(),
-                &[],
-                &plan_output,
-            );
+                team_size,
+                previous_iteration: previous_iteration.as_slice(),
+                handoff_results: &[],
+                plan_output: &plan_output,
+            });
             let options = engine_options(
                 &resolved,
-                &member,
-                prompt,
-                &role,
-                iteration,
-                &workflow,
-                (*progress).clone(),
+                EngineOptionsInput {
+                    member: &member,
+                    prompt,
+                    role: &role,
+                    iteration,
+                    workflow: &workflow,
+                    progress: (*progress).clone(),
+                    cancel: (*cancel).clone(),
+                },
             );
             let _ = tx.send(run_engine(&member, options));
         });
@@ -1897,31 +2365,24 @@ fn run_iteration(
     results
 }
 
-fn engine_options(
-    resolved: &ResolvedArgs,
-    member: &str,
-    prompt: String,
-    role: &str,
-    iteration: usize,
-    workflow: &Workflow,
-    progress: Option<ProgressSink>,
-) -> EngineRunOptions {
+fn engine_options(resolved: &ResolvedArgs, input: EngineOptionsInput<'_>) -> EngineRunOptions {
     EngineRunOptions {
-        prompt,
+        prompt: input.prompt,
         cwd: resolved.cwd.clone(),
         timeout_ms: resolved.raw.timeout * 1000,
-        effort: provider_effort(resolved, member),
-        model: provider_model(resolved, member),
-        permission: provider_permission(resolved, member),
-        auth: provider_auth(resolved, member),
-        capability: provider_capability(resolved, member),
-        role: role.to_string(),
-        iteration,
-        total_iterations: workflow.iterations,
-        team_size: *workflow.teams.get(member).unwrap_or(&DEFAULT_TEAM_SIZE),
+        effort: provider_effort(resolved, input.member),
+        model: provider_model(resolved, input.member),
+        permission: provider_permission(resolved, input.member),
+        auth: provider_auth(resolved, input.member),
+        capability: provider_capability(resolved, input.member),
+        role: input.role.to_string(),
+        iteration: input.iteration,
+        total_iterations: input.workflow.iterations,
+        team_size: effective_team_size(input.workflow, input.member),
         is_sub_agent: false,
-        live: resolved.raw.verbose || progress.is_some(),
-        progress,
+        live: resolved.raw.verbose || input.progress.is_some(),
+        progress: input.progress,
+        cancel: input.cancel,
     }
 }
 
@@ -2129,11 +2590,17 @@ fn missing_engine_if_unavailable(name: &str, options: &EngineRunOptions) -> Opti
     emit_runtime_event(
         &options.progress,
         options.live && options.progress.is_none(),
-        progress_event(
+        progress_event_with_context(
             Some(name),
             Some(&options.role),
             ProgressStage::Done,
             Some("missing"),
+            Some(options.iteration),
+            Some(options.total_iterations),
+            options.is_sub_agent,
+            Some(0),
+            Some(token_usage(&options.prompt, "")),
+            vec![],
             message,
         ),
     );
@@ -2207,26 +2674,29 @@ fn run_engine_single(
     let started = Instant::now();
     let bin = resolve_binary(name);
     let live = options.live;
+    let role_is_sub_agent = options.role.contains(":sub-agent-");
     let start_message = format!(
         "[amon-hen] start {} role={} iteration={}/{}{}",
         name,
         options.role,
         options.iteration,
         options.total_iterations,
-        if options.is_sub_agent {
-            " sub-agent"
-        } else {
-            ""
-        }
+        if role_is_sub_agent { " sub-agent" } else { "" }
     );
     emit_runtime_event(
         &options.progress,
         live && options.progress.is_none(),
-        progress_event(
+        progress_event_with_context(
             Some(name),
             Some(&options.role),
             ProgressStage::Start,
             Some("running"),
+            Some(options.iteration),
+            Some(options.total_iterations),
+            role_is_sub_agent,
+            None,
+            None,
+            vec![],
             start_message,
         ),
     );
@@ -2241,6 +2711,7 @@ fn run_engine_single(
             stdout: String::new(),
             stderr: String::new(),
             timed_out: false,
+            cancelled: false,
             error: Some(format!("Unknown engine: {name}")),
             timeout_ms: options.timeout_ms,
             duration_ms: started.elapsed().as_millis(),
@@ -2269,11 +2740,17 @@ fn run_engine_single(
         emit_runtime_event(
             &engine_progress,
             live && engine_progress.is_none(),
-            progress_event(
+            progress_event_with_context(
                 Some(&engine.name),
                 Some(&engine.role),
                 ProgressStage::Done,
                 Some(&engine.status),
+                Some(engine.iteration),
+                Some(engine.total_iterations),
+                engine.role.contains(":sub-agent-"),
+                Some(engine.duration_ms),
+                Some(engine.token_usage.clone()),
+                engine.tool_calls.clone(),
                 done_message,
             ),
         );
@@ -2316,6 +2793,7 @@ fn run_codex(bin: &str, options: &EngineRunOptions) -> CommandResult {
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
                 error: Some(error.to_string()),
                 timeout_ms: options.timeout_ms,
                 duration_ms: 0,
@@ -2348,16 +2826,13 @@ fn run_codex(bin: &str, options: &EngineRunOptions) -> CommandResult {
         "-".to_string(),
     ]);
     let mut result = run_command(
-        bin,
-        &args,
-        &options.cwd,
-        Some(&options.prompt),
-        options.timeout_ms,
-        HashMap::new(),
-        command_progress(
-            live_label("codex", options).as_deref(),
-            options.progress.clone(),
-        ),
+        CommandRequest::new(bin, &args, &options.cwd, options.timeout_ms)
+            .stdin_text(Some(&options.prompt))
+            .progress(command_progress(
+                live_label("codex", options).as_deref(),
+                options.progress.clone(),
+            ))
+            .cancel(options.cancel.clone()),
     );
     if let Ok(output) = fs::read_to_string(output_path) {
         if !output.trim().is_empty() {
@@ -2417,16 +2892,13 @@ fn run_claude(bin: &str, options: &EngineRunOptions) -> CommandResult {
         }
     }
     run_command(
-        bin,
-        &args,
-        &options.cwd,
-        Some(&options.prompt),
-        options.timeout_ms,
-        HashMap::new(),
-        command_progress(
-            live_label("claude", options).as_deref(),
-            options.progress.clone(),
-        ),
+        CommandRequest::new(bin, &args, &options.cwd, options.timeout_ms)
+            .stdin_text(Some(&options.prompt))
+            .progress(command_progress(
+                live_label("claude", options).as_deref(),
+                options.progress.clone(),
+            ))
+            .cancel(options.cancel.clone()),
     )
 }
 
@@ -2472,16 +2944,13 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
         }
     }
     run_command(
-        bin,
-        &args,
-        &options.cwd,
-        None,
-        options.timeout_ms,
-        envs,
-        command_progress(
-            live_label("gemini", options).as_deref(),
-            options.progress.clone(),
-        ),
+        CommandRequest::new(bin, &args, &options.cwd, options.timeout_ms)
+            .envs(envs)
+            .progress(command_progress(
+                live_label("gemini", options).as_deref(),
+                options.progress.clone(),
+            ))
+            .cancel(options.cancel.clone()),
     )
 }
 
@@ -2504,6 +2973,20 @@ fn role_from_live_label(label: &str) -> Option<&str> {
         return label.split_whitespace().nth(1);
     }
     None
+}
+
+fn iteration_from_live_label(label: &str) -> Option<usize> {
+    iteration_pair_from_live_label(label).map(|(iteration, _)| iteration)
+}
+
+fn total_iterations_from_live_label(label: &str) -> Option<usize> {
+    iteration_pair_from_live_label(label).map(|(_, total)| total)
+}
+
+fn iteration_pair_from_live_label(label: &str) -> Option<(usize, usize)> {
+    let pair = label.split_whitespace().last()?;
+    let (iteration, total) = pair.split_once('/')?;
+    Some((iteration.parse().ok()?, total.parse().ok()?))
 }
 
 fn prepare_gemini_settings(options: &EngineRunOptions) -> Option<TempSettings> {
@@ -2554,49 +3037,94 @@ fn should_use_claude_bare_mode(auth: &str) -> bool {
         .is_some()
 }
 
-fn run_command(
-    command: &str,
-    args: &[String],
-    cwd: &Path,
-    stdin_text: Option<&str>,
-    timeout_ms: u64,
-    envs: HashMap<String, String>,
-    progress: Option<CommandProgress>,
-) -> CommandResult {
+fn configure_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+}
+
+fn terminate_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pgid = -(child.id() as i32);
+        unsafe {
+            libc::kill(pgid, libc::SIGTERM);
+        }
+        for _ in 0..20 {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        unsafe {
+            libc::kill(pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
+fn run_command(request: CommandRequest<'_>) -> CommandResult {
+    let CommandRequest {
+        command,
+        args,
+        cwd,
+        stdin_text,
+        timeout_ms,
+        envs,
+        progress,
+        cancel,
+    } = request;
     let started = Instant::now();
     if let Some(progress) = &progress {
         emit_runtime_event(
             &progress.sink,
             progress.sink.is_none(),
-            progress_event(
+            progress_event_with_context(
                 provider_from_live_label(&progress.label),
                 role_from_live_label(&progress.label),
                 ProgressStage::Spawn,
                 Some("running"),
+                iteration_from_live_label(&progress.label),
+                total_iterations_from_live_label(&progress.label),
+                role_from_live_label(&progress.label)
+                    .is_some_and(|role| role.contains(":sub-agent-")),
+                None,
+                None,
+                vec![],
                 format!("[amon-hen] spawn {}", progress.label),
             ),
         );
     }
-    let mut child = match Command::new(command)
+    let mut process = Command::new(command);
+    process
         .args(args)
         .current_dir(cwd)
         .envs(envs)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    configure_process_group(&mut process);
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
             if let Some(progress) = &progress {
                 emit_runtime_event(
                     &progress.sink,
                     progress.sink.is_none(),
-                    progress_event(
+                    progress_event_with_context(
                         provider_from_live_label(&progress.label),
                         role_from_live_label(&progress.label),
                         ProgressStage::Done,
                         Some("missing"),
+                        iteration_from_live_label(&progress.label),
+                        total_iterations_from_live_label(&progress.label),
+                        role_from_live_label(&progress.label)
+                            .is_some_and(|role| role.contains(":sub-agent-")),
+                        Some(started.elapsed().as_millis()),
+                        None,
+                        vec![],
                         format!("[amon-hen] spawn failed {}: {error}", progress.label),
                     ),
                 );
@@ -2608,6 +3136,7 @@ fn run_command(
                 stdout: String::new(),
                 stderr: String::new(),
                 timed_out: false,
+                cancelled: false,
                 error: Some(error.to_string()),
                 timeout_ms,
                 duration_ms: started.elapsed().as_millis(),
@@ -2626,6 +3155,7 @@ fn run_command(
     let timeout = Duration::from_millis(timeout_ms);
     let mut next_live_tick = Duration::from_secs(10);
     let mut timed_out = false;
+    let mut cancelled = false;
     let code;
     loop {
         match child.try_wait() {
@@ -2634,9 +3164,19 @@ fn run_command(
                 break;
             }
             Ok(None) => {
+                if cancel
+                    .as_ref()
+                    .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+                {
+                    cancelled = true;
+                    terminate_child_tree(&mut child);
+                    let status = child.wait().ok();
+                    code = status.and_then(|status| status.code());
+                    break;
+                }
                 if timeout_ms > 0 && started.elapsed() >= timeout {
                     timed_out = true;
-                    let _ = child.kill();
+                    terminate_child_tree(&mut child);
                     let status = child.wait().ok();
                     code = status.and_then(|status| status.code());
                     break;
@@ -2652,11 +3192,18 @@ fn run_command(
                         emit_runtime_event(
                             &progress.sink,
                             progress.sink.is_none(),
-                            progress_event(
+                            progress_event_with_context(
                                 provider_from_live_label(&progress.label),
                                 role_from_live_label(&progress.label),
                                 ProgressStage::Heartbeat,
                                 Some("running"),
+                                iteration_from_live_label(&progress.label),
+                                total_iterations_from_live_label(&progress.label),
+                                role_from_live_label(&progress.label)
+                                    .is_some_and(|role| role.contains(":sub-agent-")),
+                                Some(elapsed.as_millis()),
+                                None,
+                                vec![],
                                 format!(
                                     "[amon-hen] running {} for {}s{}",
                                     progress.label,
@@ -2678,6 +3225,7 @@ fn run_command(
                     stdout: String::new(),
                     stderr: String::new(),
                     timed_out,
+                    cancelled,
                     error: Some(error.to_string()),
                     timeout_ms,
                     duration_ms: started.elapsed().as_millis(),
@@ -2697,7 +3245,8 @@ fn run_command(
             .and_then(|handle| handle.join().ok())
             .unwrap_or_default(),
         timed_out,
-        error: None,
+        cancelled,
+        error: cancelled.then(|| "cancelled".to_string()),
         timeout_ms,
         duration_ms: started.elapsed().as_millis(),
     }
@@ -2728,7 +3277,9 @@ fn finalize_engine(
         Some(Engine::Codex) => parse_codex_output(&command_result.stdout),
         None => command_result.stdout.trim().to_string(),
     };
-    let status = if command_result.error.is_some() {
+    let status = if command_result.cancelled {
+        "cancelled"
+    } else if command_result.error.is_some() {
         "missing"
     } else if command_result.timed_out {
         "timeout"
@@ -2739,6 +3290,8 @@ fn finalize_engine(
     };
     let detail = if status == "ok" {
         String::new()
+    } else if command_result.cancelled {
+        "Cancelled by Studio/user request.".to_string()
     } else if command_result.timed_out {
         format!("Timed out after {}s.", command_result.timeout_ms / 1000)
     } else {
@@ -2788,7 +3341,9 @@ fn compact_failure(result: &CommandResult) -> String {
 }
 
 fn command_telemetry(result: &CommandResult) -> CommandTelemetry {
-    let status = if result.error.is_some() {
+    let status = if result.cancelled {
+        "cancelled"
+    } else if result.error.is_some() {
         "missing"
     } else if result.timed_out {
         "timeout"
@@ -2877,57 +3432,53 @@ fn extract_json(text: &str) -> Option<Value> {
     })
 }
 
-fn build_member_prompt(
-    query: &str,
-    role: &str,
-    workflow: &Workflow,
-    iteration: usize,
-    previous_iteration: &[EngineResult],
-    handoff_results: &[EngineResult],
-    plan_output: &str,
-) -> String {
+fn build_member_prompt(input: MemberPromptInput<'_>) -> String {
     let mut sections = vec![
         "You are one member of a multi-model Amon Hen run.".to_string(),
         format!(
             "Amon Hen workflow: iteration {iteration} of {}.",
-            workflow.iterations
+            input.workflow.iterations,
+            iteration = input.iteration
         ),
-        workflow
+        input
+            .workflow
             .lead
             .as_ref()
             .map(|lead| format!("Lead model: {lead}."))
             .unwrap_or_else(|| "Lead model: auto.".to_string()),
-        workflow
+        input
+            .workflow
             .planner
             .as_ref()
             .map(|planner| format!("Planner model: {planner}."))
             .unwrap_or_else(|| "Planner model: none.".to_string()),
-        format!("Your assigned role: {role}."),
-        role_instruction(role).to_string(),
+        format!("Your assigned role: {}.", input.role),
+        role_instruction(input.role).to_string(),
         "Answer the user query directly.".to_string(),
         "Do not introduce yourself.".to_string(),
         "Do not describe your tools, environment, or capabilities unless the user explicitly asks."
             .to_string(),
         "Be concise unless the user asks for depth.".to_string(),
     ];
-    if workflow.team_work > 0 {
+    if input.team_size > 0 {
         sections.push(format!(
             "Team work: you may coordinate up to {} internal sub-agents or subtasks inside your own CLI if that helps.",
-            workflow.team_work
+            input.team_size
         ));
     }
-    if workflow.handoff {
+    if input.workflow.handoff {
         sections.push(
             "Handoff mode is enabled. Treat earlier Amon Hen outputs as working context."
                 .to_string(),
         );
     }
-    if !plan_output.trim().is_empty() {
-        sections.push(format!("Planner handoff:\n{}", plan_output.trim()));
+    if !input.plan_output.trim().is_empty() {
+        sections.push(format!("Planner handoff:\n{}", input.plan_output.trim()));
     }
-    let context = previous_iteration
+    let context = input
+        .previous_iteration
         .iter()
-        .chain(handoff_results.iter())
+        .chain(input.handoff_results.iter())
         .filter(|result| result.status == "ok" && !result.output.trim().is_empty())
         .map(|result| format!("### {}\n{}", result.name, result.output.trim()))
         .collect::<Vec<_>>()
@@ -2935,7 +3486,7 @@ fn build_member_prompt(
     if !context.is_empty() {
         sections.push(format!("Earlier Amon Hen handoffs:\n{context}"));
     }
-    sections.push(format!("Current user query:\n{}", query.trim()));
+    sections.push(format!("Current user query:\n{}", input.query.trim()));
     sections.join("\n\n")
 }
 
@@ -2974,7 +3525,7 @@ fn role_instruction(role: &str) -> &'static str {
     }
 }
 
-fn execution_order(members: &[String], planner: Option<&str>) -> Vec<String> {
+fn execution_order(members: &[String], planner: Option<&str>, lead: Option<&str>) -> Vec<String> {
     let mut ordered = Vec::new();
     if let Some(planner) = planner {
         if members.iter().any(|member| member == planner) {
@@ -2984,9 +3535,16 @@ fn execution_order(members: &[String], planner: Option<&str>) -> Vec<String> {
     ordered.extend(
         members
             .iter()
-            .filter(|member| Some(member.as_str()) != planner)
+            .filter(|member| Some(member.as_str()) != planner && Some(member.as_str()) != lead)
             .cloned(),
     );
+    if lead != planner {
+        if let Some(lead) = lead {
+            if members.iter().any(|member| member == lead) {
+                ordered.push(lead.to_string());
+            }
+        }
+    }
     ordered
 }
 
@@ -3051,6 +3609,25 @@ fn aggregate_token_usage(mut usage: TokenUsage, sub_agents: &[EngineResult]) -> 
         usage.estimated |= agent.token_usage.estimated;
     }
     usage.source = format!("{}+sub-agents", usage.source);
+    usage
+}
+
+fn aggregate_results_token_usage<'a>(
+    results: impl IntoIterator<Item = &'a EngineResult>,
+) -> TokenUsage {
+    let mut usage = TokenUsage {
+        input: 0,
+        output: 0,
+        total: 0,
+        estimated: false,
+        source: "aggregate".to_string(),
+    };
+    for result in results {
+        usage.input += result.token_usage.input;
+        usage.output += result.token_usage.output;
+        usage.total += result.token_usage.total;
+        usage.estimated |= result.token_usage.estimated;
+    }
     usage
 }
 
@@ -3335,6 +3912,51 @@ fn is_success(result: &AmonHenResult) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex as TestMutex;
+
+    static ENV_LOCK: TestMutex<()> = TestMutex::new(());
+
+    struct ProviderEnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl ProviderEnvGuard {
+        fn install_echo_bins() -> Option<Self> {
+            let echo = Path::new("/bin/echo");
+            if !echo.is_file() {
+                return None;
+            }
+            let vars = [
+                "AMON_HEN_CODEX_BIN",
+                "AMON_HEN_CLAUDE_BIN",
+                "AMON_HEN_GEMINI_BIN",
+            ];
+            let saved = vars
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect::<Vec<_>>();
+            for (name, _) in &saved {
+                unsafe {
+                    std::env::set_var(name, echo);
+                }
+            }
+            Some(Self { saved })
+        }
+    }
+
+    impl Drop for ProviderEnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.saved {
+                unsafe {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    } else {
+                        std::env::remove_var(name);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn help_flags_use_success_exit_code() {
@@ -3452,6 +4074,432 @@ mod tests {
     }
 
     #[test]
+    fn cli_role_flag_matrix_reaches_provider_options_and_prompts() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex,claude,gemini",
+            "--planner",
+            "codex",
+            "--lead",
+            "claude",
+            "--handoff",
+            "--iterations",
+            "3",
+            "--team-work",
+            "2",
+            "--codex-sub-agents",
+            "4",
+            "--claude-sub-agents",
+            "1",
+            "--gemini-sub-agents",
+            "0",
+            "--codex-model",
+            "gpt-5.2",
+            "--codex-effort",
+            "xhigh",
+            "--codex-sandbox",
+            "danger-full-access",
+            "--codex-config",
+            "sandbox_workspace_write.network_access=true",
+            "--codex-mcp-profile",
+            "repo",
+            "--claude-model",
+            "sonnet",
+            "--claude-effort",
+            "max",
+            "--claude-permission-mode",
+            "bypassPermissions",
+            "--claude-allowed-tools",
+            "Read,Edit",
+            "--claude-tools",
+            "Bash",
+            "--claude-agent",
+            "lead-reviewer",
+            "--gemini-model",
+            "gemini-2.5-pro",
+            "--gemini-effort",
+            "high",
+            "--gemini-settings",
+            "gemini-settings.json",
+            "--gemini-tools-profile",
+            "repo,ci",
+            "--gemini-allowed-mcp-servers",
+            "linear",
+            "Fix the regression",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let workflow = build_workflow(&resolved);
+        let previous = vec![EngineResult {
+            name: "gemini".to_string(),
+            bin: Some("gemini".to_string()),
+            status: "ok".to_string(),
+            duration_ms: 1,
+            detail: String::new(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            output: "previous iteration context".to_string(),
+            command: "gemini".to_string(),
+            token_usage: token_usage("a", "b"),
+            tool_calls: vec![],
+            sub_agents: vec![],
+            role: "executor".to_string(),
+            iteration: 1,
+            total_iterations: 3,
+            team_size: 0,
+        }];
+        let handoff = vec![EngineResult {
+            name: "codex".to_string(),
+            bin: Some("codex".to_string()),
+            status: "ok".to_string(),
+            duration_ms: 1,
+            detail: String::new(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            output: "planner handoff context".to_string(),
+            command: "codex".to_string(),
+            token_usage: token_usage("a", "b"),
+            tool_calls: vec![],
+            sub_agents: vec![],
+            role: "planner".to_string(),
+            iteration: 2,
+            total_iterations: 3,
+            team_size: 4,
+        }];
+
+        assert_eq!(workflow.iterations, 3);
+        assert!(workflow.handoff);
+        assert_eq!(workflow.team_work, 2);
+        assert_eq!(workflow.teams.get("codex"), Some(&4));
+        assert_eq!(workflow.teams.get("claude"), Some(&1));
+        assert_eq!(workflow.teams.get("gemini"), Some(&0));
+        assert_eq!(role_for("codex", &workflow), "planner");
+        assert_eq!(role_for("claude", &workflow), "lead");
+        assert_eq!(role_for("gemini", &workflow), "executor");
+
+        let codex_prompt = build_member_prompt(MemberPromptInput {
+            query: "Fix the regression",
+            role: "planner",
+            workflow: &workflow,
+            iteration: 2,
+            team_size: effective_team_size(&workflow, "codex"),
+            previous_iteration: &previous,
+            handoff_results: &handoff,
+            plan_output: "plan output",
+        });
+        assert!(codex_prompt.contains("Amon Hen workflow: iteration 2 of 3."));
+        assert!(codex_prompt.contains("Lead model: claude."));
+        assert!(codex_prompt.contains("Planner model: codex."));
+        assert!(codex_prompt.contains("Your assigned role: planner."));
+        assert!(codex_prompt.contains("Handoff mode is enabled."));
+        assert!(codex_prompt.contains("Team work: you may coordinate up to 4 internal sub-agents"));
+        assert!(codex_prompt.contains("Planner handoff:\nplan output"));
+        assert!(codex_prompt.contains("previous iteration context"));
+        assert!(codex_prompt.contains("planner handoff context"));
+
+        let codex_options = engine_options(
+            &resolved,
+            EngineOptionsInput {
+                member: "codex",
+                prompt: codex_prompt,
+                role: "planner",
+                iteration: 2,
+                workflow: &workflow,
+                progress: None,
+                cancel: None,
+            },
+        );
+        assert_eq!(codex_options.model.as_deref(), Some("gpt-5.2"));
+        assert_eq!(codex_options.effort.as_deref(), Some("xhigh"));
+        assert_eq!(
+            codex_options.permission.as_deref(),
+            Some("danger-full-access")
+        );
+        assert_eq!(codex_options.role, "planner");
+        assert_eq!(codex_options.iteration, 2);
+        assert_eq!(codex_options.total_iterations, 3);
+        assert_eq!(codex_options.team_size, 4);
+        assert_eq!(codex_options.capability.mode, CAPABILITY_OVERRIDE);
+        assert_eq!(
+            codex_options.capability.config,
+            vec!["sandbox_workspace_write.network_access=true"]
+        );
+        assert_eq!(
+            codex_options.capability.mcp_profile.as_deref(),
+            Some("repo")
+        );
+
+        let claude_options = engine_options(
+            &resolved,
+            EngineOptionsInput {
+                member: "claude",
+                prompt: build_member_prompt(MemberPromptInput {
+                    query: "Fix the regression",
+                    role: "lead",
+                    workflow: &workflow,
+                    iteration: 2,
+                    team_size: effective_team_size(&workflow, "claude"),
+                    previous_iteration: &[],
+                    handoff_results: &[],
+                    plan_output: "",
+                }),
+                role: "lead",
+                iteration: 2,
+                workflow: &workflow,
+                progress: None,
+                cancel: None,
+            },
+        );
+        assert_eq!(claude_options.model.as_deref(), Some("sonnet"));
+        assert_eq!(claude_options.effort.as_deref(), Some("max"));
+        assert_eq!(
+            claude_options.permission.as_deref(),
+            Some("bypassPermissions")
+        );
+        assert_eq!(claude_options.role, "lead");
+        assert_eq!(claude_options.team_size, 1);
+        assert_eq!(claude_options.capability.mode, CAPABILITY_OVERRIDE);
+        assert_eq!(
+            claude_options.capability.allowed_tools,
+            vec!["Read", "Edit"]
+        );
+        assert_eq!(claude_options.capability.tools, vec!["Bash"]);
+        assert_eq!(
+            claude_options.capability.agent.as_deref(),
+            Some("lead-reviewer")
+        );
+
+        let gemini_options = engine_options(
+            &resolved,
+            EngineOptionsInput {
+                member: "gemini",
+                prompt: build_member_prompt(MemberPromptInput {
+                    query: "Fix the regression",
+                    role: "executor",
+                    workflow: &workflow,
+                    iteration: 2,
+                    team_size: effective_team_size(&workflow, "gemini"),
+                    previous_iteration: &[],
+                    handoff_results: &[],
+                    plan_output: "",
+                }),
+                role: "executor",
+                iteration: 2,
+                workflow: &workflow,
+                progress: None,
+                cancel: None,
+            },
+        );
+        assert_eq!(gemini_options.model.as_deref(), Some("gemini-2.5-pro"));
+        assert_eq!(gemini_options.effort.as_deref(), Some("high"));
+        assert_eq!(gemini_options.permission, None);
+        assert_eq!(gemini_options.role, "executor");
+        assert_eq!(gemini_options.team_size, 0);
+        assert_eq!(gemini_options.capability.mode, CAPABILITY_OVERRIDE);
+        assert_eq!(
+            gemini_options.capability.settings.as_deref(),
+            Some("gemini-settings.json")
+        );
+        assert_eq!(gemini_options.capability.tools_profile, vec!["repo", "ci"]);
+        assert_eq!(
+            gemini_options.capability.allowed_mcp_servers,
+            vec!["linear"]
+        );
+    }
+
+    #[test]
+    fn provider_command_args_include_role_matrix_settings() {
+        let cwd = std::env::current_dir().unwrap();
+        let codex_options = EngineRunOptions {
+            prompt: "codex prompt".to_string(),
+            cwd: cwd.clone(),
+            timeout_ms: 1,
+            effort: Some("high".to_string()),
+            model: Some("gpt-5.2".to_string()),
+            permission: Some("workspace-write".to_string()),
+            auth: DEFAULT_AUTH_MODE.to_string(),
+            capability: ProviderCapability {
+                mode: CAPABILITY_OVERRIDE.to_string(),
+                config: vec!["tools.web_search=true".to_string()],
+                mcp_profile: Some("repo".to_string()),
+                mcp_config: vec![],
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: vec![],
+                agent: None,
+                agents_json: None,
+                plugin_dirs: vec![],
+                strict_mcp_config: false,
+                disable_slash_commands: false,
+                settings: None,
+                tools_profile: vec![],
+                allowed_mcp_servers: vec![],
+                policy: vec![],
+                admin_policy: vec![],
+            },
+            role: "planner".to_string(),
+            iteration: 2,
+            total_iterations: 3,
+            team_size: 4,
+            is_sub_agent: false,
+            live: false,
+            progress: None,
+            cancel: None,
+        };
+        let codex = run_codex("definitely-missing-codex-test-bin", &codex_options);
+        assert_eq!(codex.args[0], "exec");
+        assert!(codex
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--model", "gpt-5.2"]));
+        assert!(codex
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-c", "model_reasoning_effort=high"]));
+        assert!(codex
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-c", "tools.web_search=true"]));
+        assert!(codex
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--profile", "repo"]));
+        assert!(codex
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--sandbox", "workspace-write"]));
+
+        let claude_options = EngineRunOptions {
+            prompt: "claude prompt".to_string(),
+            cwd: cwd.clone(),
+            timeout_ms: 1,
+            effort: Some("max".to_string()),
+            model: Some("sonnet".to_string()),
+            permission: Some("bypassPermissions".to_string()),
+            auth: "social-login".to_string(),
+            capability: ProviderCapability {
+                mode: CAPABILITY_OVERRIDE.to_string(),
+                config: vec![],
+                mcp_profile: None,
+                mcp_config: vec!["mcp.json".to_string()],
+                allowed_tools: vec!["Read".to_string(), "Edit".to_string()],
+                disallowed_tools: vec!["WebFetch".to_string()],
+                tools: vec!["Bash".to_string()],
+                agent: Some("lead-reviewer".to_string()),
+                agents_json: Some("agents.json".to_string()),
+                plugin_dirs: vec!["plugins/a".to_string(), "plugins/b".to_string()],
+                strict_mcp_config: true,
+                disable_slash_commands: true,
+                settings: None,
+                tools_profile: vec![],
+                allowed_mcp_servers: vec![],
+                policy: vec![],
+                admin_policy: vec![],
+            },
+            role: "lead".to_string(),
+            iteration: 2,
+            total_iterations: 3,
+            team_size: 1,
+            is_sub_agent: false,
+            live: false,
+            progress: None,
+            cancel: None,
+        };
+        let claude = run_claude("definitely-missing-claude-test-bin", &claude_options);
+        assert!(!claude.args.iter().any(|arg| arg == "--bare"));
+        assert!(claude
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--permission-mode", "bypassPermissions"]));
+        assert!(claude
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--model", "sonnet"]));
+        assert!(claude
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--effort", "max"]));
+        assert!(claude
+            .args
+            .windows(3)
+            .any(|triple| triple == ["--allowedTools", "Read", "Edit"]));
+        assert!(claude
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--agent", "lead-reviewer"]));
+        assert!(claude.args.iter().any(|arg| arg == "--strict-mcp-config"));
+        assert!(claude
+            .args
+            .iter()
+            .any(|arg| arg == "--disable-slash-commands"));
+
+        let gemini_options = EngineRunOptions {
+            prompt: "gemini prompt".to_string(),
+            cwd,
+            timeout_ms: 1,
+            effort: Some("high".to_string()),
+            model: Some("gemini-2.5-pro".to_string()),
+            permission: None,
+            auth: DEFAULT_AUTH_MODE.to_string(),
+            capability: ProviderCapability {
+                mode: CAPABILITY_OVERRIDE.to_string(),
+                config: vec![],
+                mcp_profile: None,
+                mcp_config: vec![],
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: vec![],
+                agent: None,
+                agents_json: None,
+                plugin_dirs: vec![],
+                strict_mcp_config: false,
+                disable_slash_commands: false,
+                settings: None,
+                tools_profile: vec!["repo".to_string(), "ci".to_string()],
+                allowed_mcp_servers: vec!["linear".to_string()],
+                policy: vec!["default".to_string()],
+                admin_policy: vec!["locked".to_string()],
+            },
+            role: "executor".to_string(),
+            iteration: 2,
+            total_iterations: 3,
+            team_size: 0,
+            is_sub_agent: false,
+            live: false,
+            progress: None,
+            cancel: None,
+        };
+        let gemini = run_gemini("definitely-missing-gemini-test-bin", &gemini_options);
+        assert!(gemini
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--model", "gemini-2.5-pro"]));
+        assert!(gemini
+            .args
+            .windows(3)
+            .any(|triple| triple == ["--extensions", "repo", "ci"]));
+        assert!(gemini
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--allowed-mcp-server-names", "linear"]));
+        assert!(gemini
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--policy", "default"]));
+        assert!(gemini
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--admin-policy", "locked"]));
+        assert!(gemini
+            .args
+            .windows(2)
+            .any(|pair| pair == ["-p", "gemini prompt"]));
+    }
+
+    #[test]
     fn builds_member_prompt_with_roles_and_handoff() {
         let workflow = Workflow {
             handoff: true,
@@ -3461,7 +4509,16 @@ mod tests {
             team_work: 1,
             teams: HashMap::new(),
         };
-        let prompt = build_member_prompt("Fix the bug", "planner", &workflow, 1, &[], &[], "");
+        let prompt = build_member_prompt(MemberPromptInput {
+            query: "Fix the bug",
+            role: "planner",
+            workflow: &workflow,
+            iteration: 1,
+            team_size: 1,
+            previous_iteration: &[],
+            handoff_results: &[],
+            plan_output: "",
+        });
         assert!(prompt.contains("Amon Hen workflow: iteration 1 of 2."));
         assert!(prompt.contains("Lead model: claude."));
         assert!(prompt.contains("Planner model: codex."));
@@ -3546,6 +4603,312 @@ mod tests {
     }
 
     #[test]
+    fn json_stream_events_emit_progress_before_final_result() {
+        let bus = RuntimeEventBus::new();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        bus.add_sink(Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        }));
+        let progress = bus.progress_sink();
+
+        progress(progress_event_with_context(
+            None,
+            None,
+            ProgressStage::Start,
+            None,
+            Some(1),
+            Some(1),
+            false,
+            None,
+            None,
+            vec![],
+            "[amon-hen] iteration 1/1 started",
+        ));
+        progress(progress_event_with_context(
+            Some("codex"),
+            Some("planner"),
+            ProgressStage::Done,
+            Some("ok"),
+            Some(1),
+            Some(1),
+            false,
+            Some(25),
+            Some(token_usage("prompt", "answer")),
+            vec![],
+            "[amon-hen] done codex role=planner status=ok",
+        ));
+        let result = test_amon_hen_result(vec![test_engine_result("codex", "planner", 1)], 1);
+        bus.emit_result(&result);
+
+        let events = events.lock().unwrap();
+        assert!(events.len() >= 3);
+        assert!(events[..events.len() - 1]
+            .iter()
+            .any(|event| event.progress.stage != ProgressStage::Done));
+        assert!(events
+            .iter()
+            .any(|event| event.progress.kind == RuntimeEventKind::TokenUsage));
+        assert_eq!(
+            events.last().unwrap().progress.kind,
+            RuntimeEventKind::Result
+        );
+        assert!(events.last().unwrap().result.is_some());
+        for event in events.iter() {
+            serde_json::to_string(event).expect("json-stream event should serialize");
+        }
+    }
+
+    #[test]
+    fn runtime_event_bus_preserves_stream_sequence_order_under_fanout() {
+        let bus = RuntimeEventBus::new();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        bus.add_sink(Arc::new(move |event| {
+            captured.lock().unwrap().push(event.sequence);
+        }));
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let mut handles = Vec::new();
+
+        for index in 0..16 {
+            let progress = bus.progress_sink();
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                progress(progress_event(
+                    Some("codex"),
+                    Some("planner"),
+                    ProgressStage::Heartbeat,
+                    Some("running"),
+                    format!("[amon-hen] fanout event {index}"),
+                ));
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let sequences = events.lock().unwrap().clone();
+        assert_eq!(sequences, (1..=16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn multiple_iterations_preserve_timeline_entries() {
+        let first = vec![test_engine_result("codex", "planner", 1)];
+        let second = vec![test_engine_result("claude", "lead", 2)];
+        let timeline = vec![
+            iteration_record(1, 2, first.clone(), 10, None, None),
+            iteration_record(
+                2,
+                2,
+                second.clone(),
+                15,
+                iteration_handoff_context(&first, DEFAULT_MAX_MEMBER_CHARS),
+                Some("summary context".to_string()),
+            ),
+        ];
+        let result = test_amon_hen_result_with_iterations(second, timeline);
+
+        assert_eq!(result.iterations.len(), 2);
+        assert_eq!(result.iterations[0].iteration, 1);
+        assert_eq!(result.iterations[1].iteration, 2);
+        assert!(result.iterations[1].handoff_context.is_some());
+        assert_eq!(result.members[0].name, "claude");
+    }
+
+    #[test]
+    fn sub_agent_roles_remain_correct_in_timeline() {
+        let mut member = test_engine_result("gemini", "lead", 1);
+        member.sub_agents = vec![
+            test_engine_result("gemini", "lead:sub-agent-1", 1),
+            test_engine_result("gemini", "lead:sub-agent-2", 1),
+        ];
+        let timeline = vec![iteration_record(1, 1, vec![member], 20, None, None)];
+
+        assert_eq!(
+            timeline[0]
+                .sub_agents
+                .iter()
+                .map(|agent| agent.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["lead:sub-agent-1", "lead:sub-agent-2"]
+        );
+        assert_eq!(timeline[0].members[0].role, "lead");
+    }
+
+    #[test]
+    fn runtime_role_matrix_reaches_json_result_and_stream_events() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let Some(_env) = ProviderEnvGuard::install_echo_bins() else {
+            return;
+        };
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex,claude,gemini",
+            "--planner",
+            "codex",
+            "--lead",
+            "claude",
+            "--handoff",
+            "--iterations",
+            "2",
+            "--team-work",
+            "1",
+            "--codex-sub-agents",
+            "2",
+            "--claude-sub-agents",
+            "1",
+            "--gemini-sub-agents",
+            "0",
+            "--timeout",
+            "5",
+            "role matrix smoke",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let bus = RuntimeEventBus::new();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        bus.add_sink(Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        }));
+        let prompt_context =
+            build_prompt_context_with_progress(&resolved, Some(bus.progress_sink())).unwrap();
+        let result = run_amon_hen_with_progress_and_cancel(
+            &resolved,
+            prompt_context.prompt,
+            prompt_context.commands,
+            Some(bus.progress_sink()),
+            None,
+        );
+        bus.emit_result(&result);
+
+        assert_eq!(result.workflow.iterations, 2);
+        assert_eq!(result.workflow.teams.get("codex"), Some(&2));
+        assert_eq!(result.workflow.teams.get("claude"), Some(&1));
+        assert_eq!(result.workflow.teams.get("gemini"), Some(&0));
+        assert_eq!(result.iterations.len(), 2);
+        for iteration in &result.iterations {
+            assert_eq!(
+                iteration
+                    .members
+                    .iter()
+                    .map(|member| (member.name.as_str(), member.role.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("codex", "planner"),
+                    ("gemini", "executor"),
+                    ("claude", "lead")
+                ]
+            );
+            assert_eq!(
+                iteration
+                    .sub_agents
+                    .iter()
+                    .map(|agent| (agent.name.as_str(), agent.role.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("codex", "planner:sub-agent-1"),
+                    ("codex", "planner:sub-agent-2"),
+                    ("claude", "lead:sub-agent-1")
+                ]
+            );
+        }
+
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event.progress.provider.as_deref() == Some("codex")
+                && event.progress.role.as_deref() == Some("planner")
+                && !event.progress.is_sub_agent
+        }));
+        assert!(events.iter().any(|event| {
+            event.progress.provider.as_deref() == Some("claude")
+                && event.progress.role.as_deref() == Some("lead:sub-agent-1")
+                && event.progress.is_sub_agent
+        }));
+        let final_event = events.last().expect("final result event should exist");
+        assert_eq!(final_event.progress.kind, RuntimeEventKind::Result);
+        assert!(final_event.result.is_some());
+    }
+
+    #[test]
+    fn per_provider_sub_agent_overrides_are_reflected_in_prompts() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex,gemini",
+            "--team-work",
+            "2",
+            "--codex-sub-agents",
+            "0",
+            "--gemini-sub-agents",
+            "3",
+            "ship",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let workflow = build_workflow(&resolved);
+        let codex_prompt = build_member_prompt(MemberPromptInput {
+            query: "ship",
+            role: "executor",
+            workflow: &workflow,
+            iteration: 1,
+            team_size: effective_team_size(&workflow, "codex"),
+            previous_iteration: &[],
+            handoff_results: &[],
+            plan_output: "",
+        });
+        let gemini_prompt = build_member_prompt(MemberPromptInput {
+            query: "ship",
+            role: "executor",
+            workflow: &workflow,
+            iteration: 1,
+            team_size: effective_team_size(&workflow, "gemini"),
+            previous_iteration: &[],
+            handoff_results: &[],
+            plan_output: "",
+        });
+
+        assert!(!codex_prompt.contains("Team work:"));
+        assert!(gemini_prompt.contains("up to 3 internal sub-agents"));
+    }
+
+    #[test]
+    fn duplicate_members_are_deduped_in_input_order() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex,claude,codex,gemini,claude",
+            "hello",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        assert_eq!(resolved.members, vec!["codex", "claude", "gemini"]);
+    }
+
+    #[test]
+    fn command_cancel_stops_child_process_promptly() {
+        if !command_available("sh") {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let started = Instant::now();
+        let args = ["-c".to_string(), "sleep 30".to_string()];
+        let result =
+            run_command(CommandRequest::new("sh", &args, &cwd, 30_000).cancel(Some(cancel)));
+
+        assert!(result.cancelled);
+        assert_eq!(result.error.as_deref(), Some("cancelled"));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "cancelled command took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
     fn missing_provider_preflight_avoids_team_fanout() {
         let args = CliArgs::try_parse_from([
             "amon-hen",
@@ -3573,6 +4936,7 @@ mod tests {
             is_sub_agent: false,
             live: false,
             progress: None,
+            cancel: None,
         };
 
         let result = run_engine("definitely-missing-amon-hen-test-bin", options);
@@ -3587,5 +4951,104 @@ mod tests {
         assert!(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .is_ok());
+    }
+
+    #[test]
+    fn cli_hygiene_has_no_legacy_npm_cli_or_council_binary_references() {
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = crate_dir
+            .parent()
+            .and_then(Path::parent)
+            .expect("crate lives under crates/amon-hen");
+        assert!(!repo_root.join("package.json").exists());
+        assert!(!repo_root.join("package-lock.json").exists());
+        assert!(!repo_root.join("npm").exists());
+        assert!(!repo_root.join("bin").join("council").exists());
+
+        let docs = [
+            repo_root.join("README.md"),
+            crate_dir.join("README.md"),
+            crate_dir.join("CHANGELOG.md"),
+        ];
+        for path in docs {
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(
+                !text.contains("`council`") && !text.contains(" council "),
+                "legacy binary reference remains in {}",
+                path.display()
+            );
+        }
+
+        let help = render_cli_help();
+        assert!(!help.contains("council"));
+        assert!(help.contains("amon-hen"));
+    }
+
+    fn test_amon_hen_result(members: Vec<EngineResult>, total_iterations: usize) -> AmonHenResult {
+        let timeline = vec![iteration_record(
+            total_iterations,
+            total_iterations,
+            members.clone(),
+            25,
+            None,
+            Some("summary context".to_string()),
+        )];
+        test_amon_hen_result_with_iterations(members, timeline)
+    }
+
+    fn test_amon_hen_result_with_iterations(
+        members: Vec<EngineResult>,
+        iterations: Vec<IterationRecord>,
+    ) -> AmonHenResult {
+        let mut teams = HashMap::new();
+        teams.insert("codex".to_string(), 0);
+        teams.insert("claude".to_string(), 0);
+        teams.insert("gemini".to_string(), 0);
+        let workflow = Workflow {
+            handoff: true,
+            lead: Some("claude".to_string()),
+            planner: Some("codex".to_string()),
+            iterations: iterations.len().max(1),
+            team_work: 0,
+            teams,
+        };
+        AmonHenResult {
+            query: "ship it".to_string(),
+            cwd: ".".to_string(),
+            members_requested: members.iter().map(|member| member.name.clone()).collect(),
+            summarizer_requested: "auto".to_string(),
+            workflow,
+            prompt_commands: vec![],
+            iterations,
+            members,
+            summary: test_engine_result("codex", "summary", 1),
+        }
+    }
+
+    fn test_engine_result(name: &str, role: &str, iteration: usize) -> EngineResult {
+        EngineResult {
+            name: name.to_string(),
+            bin: Some(name.to_string()),
+            status: "ok".to_string(),
+            duration_ms: 10,
+            detail: String::new(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            output: format!("{name} output"),
+            command: format!("{name} exec"),
+            token_usage: token_usage("prompt", "output"),
+            tool_calls: vec![ToolUsage {
+                name: "tool".to_string(),
+                kind: name.to_string(),
+                status: "observed".to_string(),
+                detail: "detail".to_string(),
+            }],
+            sub_agents: vec![],
+            role: role.to_string(),
+            iteration,
+            total_iterations: iteration.max(1),
+            team_size: 0,
+        }
     }
 }

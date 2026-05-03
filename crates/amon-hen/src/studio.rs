@@ -15,15 +15,19 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use std::collections::HashMap;
-use std::sync::mpsc::Receiver;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 
-const MENU: [&str; 15] = [
+const MENU: [&str; 18] = [
     "Run / re-run",
+    "Cancel job",
     "Edit prompt",
     "Social login",
     "Auth status",
     "Linear status",
     "Deliver Linear",
+    "Save profile",
+    "Load profile",
     "Tag local file",
     "Run command",
     "Settings",
@@ -83,6 +87,8 @@ enum InputMode {
     GeminiAllowedMcp,
     GeminiPolicy,
     GeminiAdminPolicy,
+    SaveProfile,
+    LoadProfile,
 }
 
 struct StudioState {
@@ -101,6 +107,9 @@ struct StudioState {
     last_capability_result: Option<String>,
     run_job: Option<StudioRunJob>,
     run_events: Vec<String>,
+    profile_name: String,
+    profile_path: PathBuf,
+    profile_names: Vec<String>,
     provider_status: HashMap<String, String>,
     provider_detail: HashMap<String, String>,
     status: String,
@@ -113,23 +122,169 @@ struct StudioState {
 struct StudioRunJob {
     rx: Receiver<StudioJobMessage>,
     started: Instant,
+    cancel: Arc<AtomicBool>,
+    kind: StudioJobKind,
 }
 
 enum StudioJobMessage {
     Progress(ProgressEvent),
+    Log(String),
     Finished(Box<AmonHenResult>),
+    ExternalFinished(Result<StudioJobOutcome, String>),
+    Cancelled(String),
     Failed(String),
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum StudioJobKind {
+    AmonHen,
+    SocialLogin,
+    AuthStatus,
+    CapabilitiesStatus,
+    LinearStatus,
+    LinearDeliver,
+}
+
+impl StudioJobKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AmonHen => "Amon Hen run",
+            Self::SocialLogin => "Social login",
+            Self::AuthStatus => "Auth status",
+            Self::CapabilitiesStatus => "Provider capabilities",
+            Self::LinearStatus => "Linear status",
+            Self::LinearDeliver => "Linear delivery",
+        }
+    }
+
+    fn running_status(self) -> &'static str {
+        match self {
+            Self::AmonHen => "Amon Hen running inside Studio",
+            Self::SocialLogin => "Social login running inside Studio",
+            Self::AuthStatus => "Refreshing auth status inside Studio",
+            Self::CapabilitiesStatus => "Refreshing provider capabilities inside Studio",
+            Self::LinearStatus => "Refreshing Linear status inside Studio",
+            Self::LinearDeliver => "Delivering Linear work inside Studio",
+        }
+    }
+}
+
+struct StudioJobOutcome {
+    status: String,
+    focus: Pane,
+    auth_result: Option<String>,
+    capability_result: Option<String>,
+    linear_result: Option<String>,
 }
 
 enum StudioAction {
     None,
     RunAmonHen,
+    CancelJob,
     SocialLogin,
     AuthStatus,
     CapabilitiesStatus,
     LinearStatus,
     LinearDeliver,
     Quit,
+}
+
+#[cfg(test)]
+fn dashboard_job_kind(action: &StudioAction) -> Option<StudioJobKind> {
+    match action {
+        StudioAction::RunAmonHen => Some(StudioJobKind::AmonHen),
+        StudioAction::SocialLogin => Some(StudioJobKind::SocialLogin),
+        StudioAction::AuthStatus => Some(StudioJobKind::AuthStatus),
+        StudioAction::CapabilitiesStatus => Some(StudioJobKind::CapabilitiesStatus),
+        StudioAction::LinearStatus => Some(StudioJobKind::LinearStatus),
+        StudioAction::LinearDeliver => Some(StudioJobKind::LinearDeliver),
+        StudioAction::None | StudioAction::CancelJob | StudioAction::Quit => None,
+    }
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct StudioProfilesFile {
+    profiles: HashMap<String, StudioProfile>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct StudioProfile {
+    prompt: String,
+    members: Vec<String>,
+    handoff: bool,
+    lead: Option<String>,
+    planner: Option<String>,
+    summarizer: String,
+    iterations: usize,
+    team_work: usize,
+    codex_sub_agents: Option<usize>,
+    claude_sub_agents: Option<usize>,
+    gemini_sub_agents: Option<usize>,
+    codex_model: Option<String>,
+    claude_model: Option<String>,
+    gemini_model: Option<String>,
+    codex_effort: Option<String>,
+    claude_effort: Option<String>,
+    gemini_effort: Option<String>,
+    codex_auth: String,
+    claude_auth: String,
+    gemini_auth: String,
+    codex_sandbox: String,
+    claude_permission_mode: String,
+    codex_capabilities: String,
+    codex_config: Vec<String>,
+    codex_mcp_profile: Option<String>,
+    claude_capabilities: String,
+    claude_mcp_config: Vec<String>,
+    claude_allowed_tools: Vec<String>,
+    claude_disallowed_tools: Vec<String>,
+    claude_tools: Vec<String>,
+    claude_agent: Option<String>,
+    claude_agents_json: Option<String>,
+    claude_plugin_dir: Vec<String>,
+    claude_strict_mcp_config: bool,
+    claude_disable_slash_commands: bool,
+    gemini_capabilities: String,
+    gemini_settings: Option<String>,
+    gemini_tools_profile: Vec<String>,
+    gemini_allowed_mcp_servers: Vec<String>,
+    gemini_policy: Vec<String>,
+    gemini_admin_policy: Vec<String>,
+    deliver_linear: bool,
+    linear_watch: bool,
+    linear_until_complete: bool,
+    linear_auth: String,
+    linear_issue: Vec<String>,
+    linear_query: Option<String>,
+    linear_project: Vec<String>,
+    linear_epic: Vec<String>,
+    linear_team: Option<String>,
+    linear_state: Option<String>,
+    linear_assignee: Option<String>,
+    linear_limit: usize,
+    linear_endpoint: Option<String>,
+    linear_api_key_env: String,
+    linear_oauth_token_env: String,
+    linear_completion_gate: String,
+    linear_review_state: Option<String>,
+    linear_ci_timeout: u64,
+    linear_ci_poll_interval: u64,
+    linear_workspace_strategy: String,
+    linear_poll_interval: u64,
+    linear_max_polls: Option<usize>,
+    linear_max_concurrency: usize,
+    linear_max_attempts: usize,
+    linear_retry_base: u64,
+    linear_state_file: Option<PathBuf>,
+    linear_workspace_root: Option<PathBuf>,
+    linear_observability_dir: Option<PathBuf>,
+    linear_workflow_file: Option<PathBuf>,
+    no_linear_comments: bool,
+    linear_update_review_state: bool,
+    linear_attach_media: Vec<String>,
+    linear_attachment_title: Option<String>,
+    delivery_phases: Vec<String>,
 }
 
 struct TerminalGuard;
@@ -166,6 +321,8 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         return 0;
     }
 
+    let profile_path = studio_profile_path(&resolved.cwd);
+    let profile_names = studio_profile_names(&profile_path).unwrap_or_default();
     let mut state = StudioState {
         resolved: resolved.clone(),
         prompt: resolved.prompt.trim().to_string(),
@@ -182,6 +339,9 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         last_capability_result: None,
         run_job: None,
         run_events: Vec::new(),
+        profile_name: "default".to_string(),
+        profile_path,
+        profile_names,
         provider_status: HashMap::new(),
         provider_detail: HashMap::new(),
         status: "Ready".to_string(),
@@ -193,7 +353,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
 
     configure_studio_color(&state.resolved.raw);
 
-    let mut guard = match TerminalGuard::enter() {
+    let guard = match TerminalGuard::enter() {
         Ok(guard) => guard,
         Err(error) => {
             eprintln!("{error}");
@@ -245,90 +405,32 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
             StudioAction::RunAmonHen => {
                 start_studio_run(&mut state);
             }
+            StudioAction::CancelJob => {
+                cancel_studio_job(&mut state);
+            }
             StudioAction::SocialLogin => {
-                run_external_action(
-                    &mut guard,
-                    "Starting social login",
-                    || match run_social_login(&state.resolved) {
-                        Ok(()) => state.status = "Social login completed".to_string(),
-                        Err(error) => state.status = format!("Social login failed: {error}"),
-                    },
-                );
+                start_studio_action_job(&mut state, StudioJobKind::SocialLogin);
             }
             StudioAction::AuthStatus => {
-                run_external_action(&mut guard, "Refreshing auth status", || {
-                    state.last_auth_result = Some(render_auth_statuses(&collect_auth_statuses(
-                        &state.resolved,
-                    )));
-                    state.status = "Auth status refreshed".to_string();
-                    state.focus = Pane::Agents;
-                });
+                start_studio_action_job(&mut state, StudioJobKind::AuthStatus);
             }
             StudioAction::CapabilitiesStatus => {
-                run_external_action(&mut guard, "Refreshing provider capabilities", || {
-                    state.last_capability_result = Some(render_provider_capability_statuses(
-                        &collect_provider_capability_statuses(&state.resolved),
-                    ));
-                    state.status = "Provider capabilities refreshed".to_string();
-                    state.focus = Pane::Capabilities;
-                });
+                start_studio_action_job(&mut state, StudioJobKind::CapabilitiesStatus);
             }
             StudioAction::LinearStatus => {
-                run_external_action(&mut guard, "Refreshing Linear status", || {
-                    match linear_delivery::get_linear_status(&state.resolved) {
-                        Ok(status) => {
-                            state.last_linear_result =
-                                Some(linear_delivery::render_linear_status(&status));
-                            state.status = "Linear status refreshed".to_string();
-                            state.focus = Pane::Linear;
-                        }
-                        Err(error) => state.status = format!("Linear status failed: {error}"),
-                    }
-                });
+                start_studio_action_job(&mut state, StudioJobKind::LinearStatus);
             }
             StudioAction::LinearDeliver => {
-                run_external_action(&mut guard, "Delivering Linear work", || {
-                    state.resolved.raw.deliver_linear = true;
-                    match linear_delivery::run_linear_delivery(&state.resolved) {
-                        Ok(result) => {
-                            state.last_linear_result =
-                                Some(linear_delivery::render_linear_delivery_result(&result));
-                            state.status = if result.success {
-                                "Linear delivery completed".to_string()
-                            } else {
-                                "Linear delivery needs attention".to_string()
-                            };
-                            state.focus = Pane::Linear;
-                        }
-                        Err(error) => state.status = format!("Linear delivery failed: {error}"),
-                    }
-                });
+                state.resolved.raw.deliver_linear = true;
+                start_studio_action_job(&mut state, StudioJobKind::LinearDeliver);
             }
         }
     }
 }
 
-fn run_external_action(guard: &mut TerminalGuard, label: &str, action: impl FnOnce()) {
-    let _ = execute!(io::stderr(), Show, LeaveAlternateScreen);
-    let _ = disable_raw_mode();
-    eprintln!(
-        "\n[amon-hen] {label}. Live progress follows; the dashboard will return when done.\n"
-    );
-    action();
-    eprintln!("\n[amon-hen] {label} finished. Returning to Studio.\n");
-    let _ = enable_raw_mode();
-    let _ = execute!(
-        io::stderr(),
-        EnterAlternateScreen,
-        Hide,
-        Clear(ClearType::All)
-    );
-    let _ = guard;
-}
-
 fn start_studio_run(state: &mut StudioState) {
     if state.run_job.is_some() {
-        state.status = "Amon Hen is already running".to_string();
+        state.status = "A Studio job is already running".to_string();
         state.focus = Pane::Results;
         return;
     }
@@ -338,6 +440,8 @@ fn start_studio_run(state: &mut StudioState) {
     resolved.raw.verbose = false;
     let prompt = state.prompt.clone();
     let (tx, rx) = mpsc::channel::<StudioJobMessage>();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let thread_cancel = Arc::clone(&cancel);
     let progress_tx = tx.clone();
     let progress: ProgressSink = Arc::new(move |event| {
         let _ = progress_tx.send(StudioJobMessage::Progress(event));
@@ -357,6 +461,12 @@ fn start_studio_run(state: &mut StudioState) {
     }
 
     thread::spawn(move || {
+        if thread_cancel.load(Ordering::Relaxed) {
+            let _ = tx.send(StudioJobMessage::Cancelled(
+                "Amon Hen run cancelled before start".to_string(),
+            ));
+            return;
+        }
         let mut thread_resolved = resolved;
         thread_resolved.prompt = prompt;
         let prompt_context =
@@ -369,26 +479,421 @@ fn start_studio_run(state: &mut StudioState) {
                     return;
                 }
             };
-        let result = run_amon_hen_with_progress(
+        if thread_cancel.load(Ordering::Relaxed) {
+            let _ = tx.send(StudioJobMessage::Cancelled(
+                "Amon Hen run cancelled after prompt context".to_string(),
+            ));
+            return;
+        }
+        let result = run_amon_hen_with_progress_and_cancel(
             &thread_resolved,
             prompt_context.prompt,
             prompt_context.commands,
             Some(progress),
+            Some(Arc::clone(&thread_cancel)),
         );
+        if thread_cancel.load(Ordering::Relaxed) {
+            let _ = tx.send(StudioJobMessage::Cancelled(
+                "Amon Hen run cancelled".to_string(),
+            ));
+            return;
+        }
         let _ = tx.send(StudioJobMessage::Finished(Box::new(result)));
     });
 
     state.run_job = Some(StudioRunJob {
         rx,
         started: Instant::now(),
+        cancel,
+        kind: StudioJobKind::AmonHen,
     });
+}
+
+fn start_studio_action_job(state: &mut StudioState, kind: StudioJobKind) {
+    if state.run_job.is_some() {
+        state.status = "A Studio job is already running".to_string();
+        state.focus = Pane::Results;
+        return;
+    }
+
+    let resolved = state.resolved.clone();
+    let (tx, rx) = mpsc::channel::<StudioJobMessage>();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let thread_cancel = Arc::clone(&cancel);
+
+    state.status = kind.running_status().to_string();
+    state.focus = match kind {
+        StudioJobKind::AuthStatus | StudioJobKind::SocialLogin => Pane::Agents,
+        StudioJobKind::CapabilitiesStatus => Pane::Capabilities,
+        StudioJobKind::LinearStatus | StudioJobKind::LinearDeliver => Pane::Linear,
+        StudioJobKind::AmonHen => Pane::Results,
+    };
+    push_run_event(state, format!("[studio] {} queued", kind.label()));
+
+    thread::spawn(move || {
+        let outcome = run_studio_action(kind, resolved, tx.clone(), Arc::clone(&thread_cancel));
+        if thread_cancel.load(Ordering::Relaxed) {
+            let _ = tx.send(StudioJobMessage::Cancelled(format!(
+                "{} cancelled",
+                kind.label()
+            )));
+            return;
+        }
+        let _ = tx.send(StudioJobMessage::ExternalFinished(outcome));
+    });
+
+    state.run_job = Some(StudioRunJob {
+        rx,
+        started: Instant::now(),
+        cancel,
+        kind,
+    });
+}
+
+fn run_studio_action(
+    kind: StudioJobKind,
+    mut resolved: ResolvedArgs,
+    tx: Sender<StudioJobMessage>,
+    cancel: Arc<AtomicBool>,
+) -> Result<StudioJobOutcome, String> {
+    match kind {
+        StudioJobKind::SocialLogin => {
+            run_studio_social_login(&resolved, tx, cancel)?;
+            Ok(StudioJobOutcome {
+                status: "Social login completed".to_string(),
+                focus: Pane::Agents,
+                auth_result: Some(render_auth_statuses(&collect_auth_statuses(&resolved))),
+                capability_result: None,
+                linear_result: None,
+            })
+        }
+        StudioJobKind::AuthStatus => Ok(StudioJobOutcome {
+            status: "Auth status refreshed".to_string(),
+            focus: Pane::Agents,
+            auth_result: Some(render_auth_statuses(&collect_auth_statuses_with_cancel(
+                &resolved,
+                Some(Arc::clone(&cancel)),
+            ))),
+            capability_result: None,
+            linear_result: None,
+        }),
+        StudioJobKind::CapabilitiesStatus => Ok(StudioJobOutcome {
+            status: "Provider capabilities refreshed".to_string(),
+            focus: Pane::Capabilities,
+            auth_result: None,
+            capability_result: Some(render_provider_capability_statuses(
+                &collect_provider_capability_statuses_with_cancel(
+                    &resolved,
+                    Some(Arc::clone(&cancel)),
+                ),
+            )),
+            linear_result: None,
+        }),
+        StudioJobKind::LinearStatus => {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Linear status cancelled".to_string());
+            }
+            let status = linear_delivery::get_linear_status(&resolved)?;
+            Ok(StudioJobOutcome {
+                status: "Linear status refreshed".to_string(),
+                focus: Pane::Linear,
+                auth_result: None,
+                capability_result: None,
+                linear_result: Some(linear_delivery::render_linear_status(&status)),
+            })
+        }
+        StudioJobKind::LinearDeliver => {
+            resolved.raw.deliver_linear = true;
+            let progress_tx = tx.clone();
+            let progress: ProgressSink = Arc::new(move |event| {
+                let _ = progress_tx.send(StudioJobMessage::Progress(event));
+            });
+            let result = linear_delivery::run_linear_delivery_with_progress(
+                &resolved,
+                Some(progress),
+                Some(Arc::clone(&cancel)),
+            )?;
+            Ok(StudioJobOutcome {
+                status: if result.success {
+                    "Linear delivery completed".to_string()
+                } else {
+                    "Linear delivery needs attention".to_string()
+                },
+                focus: Pane::Linear,
+                auth_result: None,
+                capability_result: None,
+                linear_result: Some(linear_delivery::render_linear_delivery_result(&result)),
+            })
+        }
+        StudioJobKind::AmonHen => unreachable!("Amon Hen uses start_studio_run"),
+    }
+}
+
+fn cancel_studio_job(state: &mut StudioState) {
+    let Some(job) = &state.run_job else {
+        state.status = "No active Studio job to cancel".to_string();
+        return;
+    };
+    let label = job.kind.label();
+    if job.cancel.swap(true, Ordering::Relaxed) {
+        state.status = format!("{label} cancellation already requested");
+        return;
+    }
+    state.status = format!("{label} cancellation requested");
+    state.focus = Pane::Results;
+    push_run_event(
+        state,
+        format!("[studio] {label} cancellation requested; owned subprocesses will be stopped where possible"),
+    );
+}
+
+fn run_studio_social_login(
+    resolved: &ResolvedArgs,
+    tx: Sender<StudioJobMessage>,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let providers = if resolved.raw.auth_login_providers.is_empty() {
+        resolved.members.clone()
+    } else {
+        resolved.raw.auth_login_providers.clone()
+    };
+
+    for provider in providers {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Social login cancelled".to_string());
+        }
+        validate_engine_name(&provider, false, "--auth-login-providers")?;
+        let (bin, args, instruction): (String, Vec<String>, &str) = match provider.as_str() {
+            "codex" => {
+                let mut args = vec!["login".to_string()];
+                if resolved.raw.auth_device_code {
+                    args.push("--device-auth".to_string());
+                }
+                (
+                    resolve_binary("codex"),
+                    args,
+                    "Complete browser login when opened; device-code flows are shown in the Studio log.",
+                )
+            }
+            "claude" => {
+                let mut args = vec!["auth".to_string(), "login".to_string()];
+                match resolved.raw.claude_login_mode.as_str() {
+                    "console" => args.push("--console".to_string()),
+                    "sso" => args.push("--sso".to_string()),
+                    _ => args.push("--claudeai".to_string()),
+                }
+                if let Some(email) = &resolved.raw.claude_login_email {
+                    push_arg(&mut args, "--email", email.clone());
+                }
+                (
+                    resolve_binary("claude"),
+                    args,
+                    "Complete browser login when opened; CLI prompts are surfaced in the Studio log.",
+                )
+            }
+            "gemini" => (
+                resolve_binary("gemini"),
+                vec![],
+                "Use the Gemini CLI auth selector from the Studio log; browser URLs are opened when emitted.",
+            ),
+            _ => unreachable!(),
+        };
+        send_studio_log(
+            &tx,
+            format!(
+                "[auth] launching {provider}: {}",
+                format_command(&bin, &args)
+            ),
+        );
+        send_studio_log(&tx, format!("[auth] {provider}: {instruction}"));
+        let result = run_studio_auth_command(StudioAuthCommand {
+            command: &bin,
+            args: &args,
+            cwd: &resolved.cwd,
+            timeout_ms: resolved.raw.auth_timeout * 1000,
+            open_browser: !resolved.raw.no_auth_open_browser,
+            provider: &provider,
+            tx: tx.clone(),
+            cancel: Arc::clone(&cancel),
+        })?;
+        if result.code.unwrap_or(1) != 0 {
+            return Err(format!(
+                "{provider} social login failed: {}",
+                compact_failure(&result)
+            ));
+        }
+        let status = provider_auth_status(&provider, resolved);
+        send_studio_log(
+            &tx,
+            format!("[auth] {provider}: {} ({})", status.status, status.detail),
+        );
+    }
+    Ok(())
+}
+
+struct StudioAuthCommand<'a> {
+    command: &'a str,
+    args: &'a [String],
+    cwd: &'a Path,
+    timeout_ms: u64,
+    open_browser: bool,
+    provider: &'a str,
+    tx: Sender<StudioJobMessage>,
+    cancel: Arc<AtomicBool>,
+}
+
+fn run_studio_auth_command(context: StudioAuthCommand<'_>) -> Result<CommandResult, String> {
+    let started = Instant::now();
+    let mut process = Command::new(context.command);
+    process
+        .args(context.args)
+        .current_dir(context.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_process_group(&mut process);
+    let mut child = process
+        .spawn()
+        .map_err(|error| format!("{} social login failed to start: {error}", context.provider))?;
+
+    let seen_urls = Arc::new(Mutex::new(HashSet::new()));
+    let stdout = child.stdout.take().map(|pipe| {
+        read_studio_auth_pipe(
+            pipe,
+            context.provider.to_string(),
+            context.open_browser,
+            Arc::clone(&seen_urls),
+            context.tx.clone(),
+        )
+    });
+    let stderr = child.stderr.take().map(|pipe| {
+        read_studio_auth_pipe(
+            pipe,
+            context.provider.to_string(),
+            context.open_browser,
+            Arc::clone(&seen_urls),
+            context.tx.clone(),
+        )
+    });
+    let timeout = Duration::from_millis(context.timeout_ms);
+    let mut timed_out = false;
+    let code;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                code = status.code();
+                break;
+            }
+            Ok(None) => {
+                if context.cancel.load(Ordering::Relaxed) {
+                    terminate_child_tree(&mut child);
+                    let _ = child.wait();
+                    return Err(format!("{} social login cancelled", context.provider));
+                }
+                if context.timeout_ms > 0 && started.elapsed() >= timeout {
+                    timed_out = true;
+                    terminate_child_tree(&mut child);
+                    let status = child.wait().ok();
+                    code = status.and_then(|status| status.code());
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                return Ok(CommandResult {
+                    command: context.command.to_string(),
+                    args: context.args.to_vec(),
+                    code: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    timed_out,
+                    cancelled: false,
+                    error: Some(error.to_string()),
+                    timeout_ms: context.timeout_ms,
+                    duration_ms: started.elapsed().as_millis(),
+                });
+            }
+        }
+    }
+
+    Ok(CommandResult {
+        command: context.command.to_string(),
+        args: context.args.to_vec(),
+        code,
+        stdout: stdout
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default(),
+        stderr: stderr
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default(),
+        timed_out,
+        cancelled: false,
+        error: None,
+        timeout_ms: context.timeout_ms,
+        duration_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn read_studio_auth_pipe<R>(
+    mut pipe: R,
+    provider: String,
+    open_browser: bool,
+    seen_urls: Arc<Mutex<HashSet<String>>>,
+    tx: Sender<StudioJobMessage>,
+) -> thread::JoinHandle<String>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut text = String::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = match pipe.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(_) => break,
+            };
+            let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
+            text.push_str(&chunk);
+            for line in chunk.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                send_studio_log(
+                    &tx,
+                    format!("[auth] {provider}: {}", studio_clip(line, 220)),
+                );
+            }
+            if open_browser {
+                for url in extract_auth_urls(&chunk) {
+                    let mut seen = seen_urls.lock().ok();
+                    if seen.as_mut().is_some_and(|seen| !seen.insert(url.clone())) {
+                        continue;
+                    }
+                    send_studio_log(&tx, format!("[auth] {provider}: opening {url}"));
+                    if let Err(error) = open_browser_url(&url) {
+                        send_studio_log(
+                            &tx,
+                            format!("[auth] {provider}: failed to open {url}: {error}"),
+                        );
+                    }
+                }
+            }
+        }
+        text
+    })
+}
+
+fn send_studio_log(tx: &Sender<StudioJobMessage>, line: impl Into<String>) {
+    let _ = tx.send(StudioJobMessage::Log(line.into()));
 }
 
 fn drain_studio_job(state: &mut StudioState) {
     let mut messages = Vec::new();
     let mut elapsed = None;
+    let mut kind = None;
+    let mut cancel_requested = false;
     if let Some(job) = &state.run_job {
         elapsed = Some(job.started.elapsed());
+        kind = Some(job.kind);
+        cancel_requested = job.cancel.load(Ordering::Relaxed);
         while let Ok(message) = job.rx.try_recv() {
             messages.push(message);
         }
@@ -398,6 +903,7 @@ fn drain_studio_job(state: &mut StudioState) {
     for message in messages {
         match message {
             StudioJobMessage::Progress(event) => apply_progress_event(state, event),
+            StudioJobMessage::Log(line) => push_run_event(state, line),
             StudioJobMessage::Finished(result) => {
                 let result = *result;
                 state.status = if is_success(&result) {
@@ -425,6 +931,33 @@ fn drain_studio_job(state: &mut StudioState) {
                 push_run_event(state, "[studio] run finished");
                 finished = true;
             }
+            StudioJobMessage::ExternalFinished(outcome) => {
+                match outcome {
+                    Ok(outcome) => {
+                        if let Some(result) = outcome.auth_result {
+                            state.last_auth_result = Some(result);
+                        }
+                        if let Some(result) = outcome.capability_result {
+                            state.last_capability_result = Some(result);
+                        }
+                        if let Some(result) = outcome.linear_result {
+                            state.last_linear_result = Some(result);
+                        }
+                        state.status = outcome.status;
+                        state.focus = outcome.focus;
+                    }
+                    Err(error) => {
+                        state.status = error.clone();
+                        push_run_event(state, format!("[studio] {error}"));
+                    }
+                }
+                finished = true;
+            }
+            StudioJobMessage::Cancelled(message) => {
+                state.status = message.clone();
+                push_run_event(state, format!("[studio] {message}"));
+                finished = true;
+            }
             StudioJobMessage::Failed(error) => {
                 state.status = error.clone();
                 push_run_event(state, format!("[studio] {error}"));
@@ -436,7 +969,12 @@ fn drain_studio_job(state: &mut StudioState) {
     if finished {
         state.run_job = None;
     } else if let Some(elapsed) = elapsed {
-        state.status = format!("Amon Hen running ({:.1}s)", elapsed.as_secs_f64());
+        let label = kind.map(StudioJobKind::label).unwrap_or("Studio job");
+        state.status = if cancel_requested {
+            format!("{label} cancelling ({:.1}s)", elapsed.as_secs_f64())
+        } else {
+            format!("{label} running ({:.1}s)", elapsed.as_secs_f64())
+        };
     }
 }
 
@@ -473,7 +1011,7 @@ fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, S
     if let Some(mode) = state.input_mode.clone() {
         return handle_input_event(state, key, mode);
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+    if is_ctrl_c_key(key) {
         let now = Instant::now();
         if state.exit_armed_until.is_some_and(|until| now <= until) {
             return Ok(StudioAction::Quit);
@@ -488,6 +1026,7 @@ fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, S
         }
         KeyCode::Char('?') => state.show_help = !state.show_help,
         KeyCode::Char('r') => return Ok(StudioAction::RunAmonHen),
+        KeyCode::Char('c') => return Ok(StudioAction::CancelJob),
         KeyCode::Char('e') => return start_input(state, InputMode::Prompt, state.prompt.clone()),
         KeyCode::Tab => cycle_focus(state, 1),
         KeyCode::BackTab => cycle_focus(state, -1),
@@ -502,6 +1041,12 @@ fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, S
         _ => {}
     }
     Ok(StudioAction::None)
+}
+
+fn is_ctrl_c_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('\u{3}'))
+        || (key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
 }
 
 fn handle_input_event(
@@ -674,6 +1219,28 @@ fn apply_input(state: &mut StudioState, mode: InputMode, value: String) {
             "Gemini admin policy",
             &mut state.status,
         ),
+        InputMode::SaveProfile => {
+            let name = if value.trim().is_empty() {
+                state.profile_name.clone()
+            } else {
+                value
+            };
+            match save_studio_profile(state, &name) {
+                Ok(()) => state.status = format!("Profile `{name}` saved"),
+                Err(error) => state.status = format!("Profile save failed: {error}"),
+            }
+        }
+        InputMode::LoadProfile => {
+            let name = if value.trim().is_empty() {
+                state.profile_name.clone()
+            } else {
+                value
+            };
+            match load_and_apply_studio_profile(state, &name) {
+                Ok(()) => state.status = format!("Profile `{name}` loaded"),
+                Err(error) => state.status = format!("Profile load failed: {error}"),
+            }
+        }
     }
 }
 
@@ -693,6 +1260,267 @@ fn empty_to_none(value: String) -> Option<String> {
     } else {
         Some(value)
     }
+}
+
+fn non_empty_profile_value(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn studio_profile_path(cwd: &Path) -> PathBuf {
+    if let Some(path) = std::env::var_os("AMON_HEN_STUDIO_PROFILES") {
+        return PathBuf::from(path);
+    }
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(config_home)
+            .join("amon-hen")
+            .join("studio-profiles.json");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".config")
+            .join("amon-hen")
+            .join("studio-profiles.json");
+    }
+    cwd.join(".amon-hen-studio-profiles.json")
+}
+
+fn studio_profile_names(path: &Path) -> Result<Vec<String>, String> {
+    let mut names = read_studio_profiles(path)?
+        .profiles
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    names.sort();
+    Ok(names)
+}
+
+fn read_studio_profiles(path: &Path) -> Result<StudioProfilesFile, String> {
+    if !path.exists() {
+        return Ok(StudioProfilesFile::default());
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))
+}
+
+fn write_studio_profiles(path: &Path, profiles: &StudioProfilesFile) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(profiles)
+        .map_err(|error| format!("Failed to serialize Studio profiles: {error}"))?;
+    fs::write(path, text).map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+fn save_studio_profile(state: &mut StudioState, name: &str) -> Result<(), String> {
+    let name = profile_name(name)?;
+    let mut profiles = read_studio_profiles(&state.profile_path)?;
+    profiles
+        .profiles
+        .insert(name.clone(), profile_from_state(state));
+    write_studio_profiles(&state.profile_path, &profiles)?;
+    state.profile_name = name;
+    state.profile_names = studio_profile_names(&state.profile_path)?;
+    Ok(())
+}
+
+fn load_and_apply_studio_profile(state: &mut StudioState, name: &str) -> Result<(), String> {
+    let name = profile_name(name)?;
+    let profiles = read_studio_profiles(&state.profile_path)?;
+    let profile = profiles
+        .profiles
+        .get(&name)
+        .cloned()
+        .ok_or_else(|| format!("Profile `{name}` was not found"))?;
+    apply_studio_profile(state, &profile);
+    state.profile_name = name;
+    state.profile_names = studio_profile_names(&state.profile_path)?;
+    Ok(())
+}
+
+fn profile_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err("Profile name cannot be empty".to_string())
+    } else {
+        Ok(name.to_string())
+    }
+}
+
+fn profile_from_state(state: &StudioState) -> StudioProfile {
+    let raw = &state.resolved.raw;
+    StudioProfile {
+        prompt: state.prompt.clone(),
+        members: state.resolved.members.clone(),
+        handoff: raw.handoff,
+        lead: raw.lead.clone(),
+        planner: raw.planner.clone(),
+        summarizer: raw.summarizer.clone(),
+        iterations: raw.iterations,
+        team_work: raw.team_work,
+        codex_sub_agents: raw.codex_sub_agents,
+        claude_sub_agents: raw.claude_sub_agents,
+        gemini_sub_agents: raw.gemini_sub_agents,
+        codex_model: raw.codex_model.clone(),
+        claude_model: raw.claude_model.clone(),
+        gemini_model: raw.gemini_model.clone(),
+        codex_effort: raw.codex_effort.clone(),
+        claude_effort: raw.claude_effort.clone(),
+        gemini_effort: raw.gemini_effort.clone(),
+        codex_auth: raw.codex_auth.clone(),
+        claude_auth: raw.claude_auth.clone(),
+        gemini_auth: raw.gemini_auth.clone(),
+        codex_sandbox: raw.codex_sandbox.clone(),
+        claude_permission_mode: raw.claude_permission_mode.clone(),
+        codex_capabilities: raw.codex_capabilities.clone(),
+        codex_config: raw.codex_config.clone(),
+        codex_mcp_profile: raw.codex_mcp_profile.clone(),
+        claude_capabilities: raw.claude_capabilities.clone(),
+        claude_mcp_config: raw.claude_mcp_config.clone(),
+        claude_allowed_tools: raw.claude_allowed_tools.clone(),
+        claude_disallowed_tools: raw.claude_disallowed_tools.clone(),
+        claude_tools: raw.claude_tools.clone(),
+        claude_agent: raw.claude_agent.clone(),
+        claude_agents_json: raw.claude_agents_json.clone(),
+        claude_plugin_dir: raw.claude_plugin_dir.clone(),
+        claude_strict_mcp_config: raw.claude_strict_mcp_config,
+        claude_disable_slash_commands: raw.claude_disable_slash_commands,
+        gemini_capabilities: raw.gemini_capabilities.clone(),
+        gemini_settings: raw.gemini_settings.clone(),
+        gemini_tools_profile: raw.gemini_tools_profile.clone(),
+        gemini_allowed_mcp_servers: raw.gemini_allowed_mcp_servers.clone(),
+        gemini_policy: raw.gemini_policy.clone(),
+        gemini_admin_policy: raw.gemini_admin_policy.clone(),
+        deliver_linear: raw.deliver_linear,
+        linear_watch: raw.linear_watch,
+        linear_auth: raw.linear_auth.clone(),
+        linear_issue: raw.linear_issue.clone(),
+        linear_query: raw.linear_query.clone(),
+        linear_project: raw.linear_project.clone(),
+        linear_epic: raw.linear_epic.clone(),
+        linear_team: raw.linear_team.clone(),
+        linear_state: raw.linear_state.clone(),
+        linear_completion_gate: raw.linear_completion_gate.clone(),
+        linear_workspace_strategy: raw.linear_workspace_strategy.clone(),
+        linear_poll_interval: raw.linear_poll_interval,
+        linear_max_attempts: raw.linear_max_attempts,
+        no_linear_comments: raw.no_linear_comments,
+        linear_update_review_state: raw.linear_update_review_state,
+        linear_attach_media: raw.linear_attach_media.clone(),
+        linear_until_complete: raw.linear_until_complete,
+        linear_assignee: raw.linear_assignee.clone(),
+        linear_limit: raw.linear_limit,
+        linear_endpoint: raw.linear_endpoint.clone(),
+        linear_api_key_env: raw.linear_api_key_env.clone(),
+        linear_oauth_token_env: raw.linear_oauth_token_env.clone(),
+        linear_review_state: raw.linear_review_state.clone(),
+        linear_ci_timeout: raw.linear_ci_timeout,
+        linear_ci_poll_interval: raw.linear_ci_poll_interval,
+        linear_max_polls: raw.linear_max_polls,
+        linear_max_concurrency: raw.linear_max_concurrency,
+        linear_retry_base: raw.linear_retry_base,
+        linear_state_file: raw.linear_state_file.clone(),
+        linear_workspace_root: raw.linear_workspace_root.clone(),
+        linear_observability_dir: raw.linear_observability_dir.clone(),
+        linear_workflow_file: raw.linear_workflow_file.clone(),
+        linear_attachment_title: raw.linear_attachment_title.clone(),
+        delivery_phases: raw.delivery_phases.clone(),
+    }
+}
+
+fn apply_studio_profile(state: &mut StudioState, profile: &StudioProfile) {
+    let raw = &mut state.resolved.raw;
+    state.prompt = profile.prompt.clone();
+    state.resolved.prompt = profile.prompt.clone();
+    if !profile.members.is_empty() {
+        state.resolved.members = profile.members.clone();
+        raw.members = profile.members.clone();
+    }
+    raw.handoff = profile.handoff;
+    raw.lead = profile.lead.clone();
+    raw.planner = profile.planner.clone();
+    raw.summarizer = profile.summarizer.clone();
+    raw.iterations = profile.iterations.max(1);
+    raw.team_work = profile.team_work;
+    raw.codex_sub_agents = profile.codex_sub_agents;
+    raw.claude_sub_agents = profile.claude_sub_agents;
+    raw.gemini_sub_agents = profile.gemini_sub_agents;
+    raw.codex_model = profile.codex_model.clone();
+    raw.claude_model = profile.claude_model.clone();
+    raw.gemini_model = profile.gemini_model.clone();
+    raw.codex_effort = profile.codex_effort.clone();
+    raw.claude_effort = profile.claude_effort.clone();
+    raw.gemini_effort = profile.gemini_effort.clone();
+    raw.codex_auth = profile.codex_auth.clone();
+    raw.claude_auth = profile.claude_auth.clone();
+    raw.gemini_auth = profile.gemini_auth.clone();
+    raw.codex_sandbox = profile.codex_sandbox.clone();
+    raw.claude_permission_mode = profile.claude_permission_mode.clone();
+    raw.codex_capabilities = profile.codex_capabilities.clone();
+    raw.codex_config = profile.codex_config.clone();
+    raw.codex_mcp_profile = profile.codex_mcp_profile.clone();
+    raw.claude_capabilities = profile.claude_capabilities.clone();
+    raw.claude_mcp_config = profile.claude_mcp_config.clone();
+    raw.claude_allowed_tools = profile.claude_allowed_tools.clone();
+    raw.claude_disallowed_tools = profile.claude_disallowed_tools.clone();
+    raw.claude_tools = profile.claude_tools.clone();
+    raw.claude_agent = profile.claude_agent.clone();
+    raw.claude_agents_json = profile.claude_agents_json.clone();
+    raw.claude_plugin_dir = profile.claude_plugin_dir.clone();
+    raw.claude_strict_mcp_config = profile.claude_strict_mcp_config;
+    raw.claude_disable_slash_commands = profile.claude_disable_slash_commands;
+    raw.gemini_capabilities = profile.gemini_capabilities.clone();
+    raw.gemini_settings = profile.gemini_settings.clone();
+    raw.gemini_tools_profile = profile.gemini_tools_profile.clone();
+    raw.gemini_allowed_mcp_servers = profile.gemini_allowed_mcp_servers.clone();
+    raw.gemini_policy = profile.gemini_policy.clone();
+    raw.gemini_admin_policy = profile.gemini_admin_policy.clone();
+    raw.deliver_linear = profile.deliver_linear;
+    raw.linear_watch = profile.linear_watch;
+    raw.linear_auth = non_empty_profile_value(&profile.linear_auth, &raw.linear_auth);
+    raw.linear_issue = profile.linear_issue.clone();
+    raw.linear_query = profile.linear_query.clone();
+    raw.linear_project = profile.linear_project.clone();
+    raw.linear_epic = profile.linear_epic.clone();
+    raw.linear_team = profile.linear_team.clone();
+    raw.linear_state = profile.linear_state.clone();
+    raw.linear_completion_gate =
+        non_empty_profile_value(&profile.linear_completion_gate, &raw.linear_completion_gate);
+    raw.linear_workspace_strategy = non_empty_profile_value(
+        &profile.linear_workspace_strategy,
+        &raw.linear_workspace_strategy,
+    );
+    raw.linear_poll_interval = profile.linear_poll_interval.max(1);
+    raw.linear_max_attempts = profile.linear_max_attempts.max(1);
+    raw.no_linear_comments = profile.no_linear_comments;
+    raw.linear_update_review_state = profile.linear_update_review_state;
+    raw.linear_attach_media = profile.linear_attach_media.clone();
+    raw.linear_until_complete = profile.linear_until_complete;
+    raw.linear_assignee = profile.linear_assignee.clone();
+    raw.linear_limit = profile.linear_limit.max(1);
+    raw.linear_endpoint = profile.linear_endpoint.clone();
+    raw.linear_api_key_env =
+        non_empty_profile_value(&profile.linear_api_key_env, &raw.linear_api_key_env);
+    raw.linear_oauth_token_env =
+        non_empty_profile_value(&profile.linear_oauth_token_env, &raw.linear_oauth_token_env);
+    raw.linear_review_state = profile.linear_review_state.clone();
+    raw.linear_ci_timeout = profile.linear_ci_timeout;
+    raw.linear_ci_poll_interval = profile.linear_ci_poll_interval;
+    raw.linear_max_polls = profile.linear_max_polls;
+    raw.linear_max_concurrency = profile.linear_max_concurrency.max(1);
+    raw.linear_retry_base = profile.linear_retry_base;
+    raw.linear_state_file = profile.linear_state_file.clone();
+    raw.linear_workspace_root = profile.linear_workspace_root.clone();
+    raw.linear_observability_dir = profile.linear_observability_dir.clone();
+    raw.linear_workflow_file = profile.linear_workflow_file.clone();
+    raw.linear_attachment_title = profile.linear_attachment_title.clone();
+    raw.delivery_phases = profile.delivery_phases.clone();
 }
 
 fn cycle_focus(state: &mut StudioState, delta: isize) {
@@ -781,11 +1609,14 @@ fn activate_setting(state: &mut StudioState) -> Result<StudioAction, String> {
 fn activate_menu(state: &mut StudioState) -> Result<StudioAction, String> {
     match MENU[state.menu_index] {
         "Run / re-run" => Ok(StudioAction::RunAmonHen),
+        "Cancel job" => Ok(StudioAction::CancelJob),
         "Edit prompt" => start_input(state, InputMode::Prompt, state.prompt.clone()),
         "Social login" => Ok(StudioAction::SocialLogin),
         "Auth status" => Ok(StudioAction::AuthStatus),
         "Linear status" => Ok(StudioAction::LinearStatus),
         "Deliver Linear" => Ok(StudioAction::LinearDeliver),
+        "Save profile" => start_input(state, InputMode::SaveProfile, state.profile_name.clone()),
+        "Load profile" => start_input(state, InputMode::LoadProfile, state.profile_name.clone()),
         "Tag local file" => start_input(state, InputMode::File, String::new()),
         "Run command" => start_input(state, InputMode::Command, String::new()),
         "Settings" => {
@@ -1420,8 +2251,14 @@ fn render_command_rail(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
         ]),
         Line::from(format!("Files tagged: {}", state.resolved.raw.files.len())),
         Line::from(format!("Commands: {}", state.resolved.raw.commands.len())),
+        Line::from(format!(
+            "Profile: {} ({} saved)",
+            state.profile_name,
+            state.profile_names.len()
+        )),
         Line::from(format!("Timeout: {}s", state.resolved.raw.timeout)),
         Line::from(format!("Repo: {}", display_cwd(&state.resolved.cwd))),
+        Line::from(format!("Config: {}", display_cwd(&state.profile_path))),
     ])
     .block(panel_block("Session", false))
     .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
@@ -1444,6 +2281,10 @@ fn render_command_rail(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
         Line::from(vec![
             Span::styled("r", strong(STUDIO_GOLD)),
             Span::raw(" run now"),
+        ]),
+        Line::from(vec![
+            Span::styled("c", strong(STUDIO_GOLD)),
+            Span::raw(" cancel job"),
         ]),
         Line::from(vec![
             Span::styled("e", strong(STUDIO_GOLD)),
@@ -1540,6 +2381,7 @@ fn render_provider_card(
         .map(|result| result.role.clone())
         .unwrap_or_else(|| role_for(member, &workflow));
     let status = provider_status(state, member, result);
+    let health = provider_health(state, member);
     let token_usage = result.map(|result| &result.token_usage);
     let total_tokens = token_usage.map_or(0, |usage| usage.total);
     let percent = ((total_tokens.saturating_mul(100)) / max_tokens).min(100) as u16;
@@ -1560,7 +2402,7 @@ fn render_provider_card(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(6),
             Constraint::Length(2),
             Constraint::Min(1),
         ])
@@ -1577,14 +2419,30 @@ fn render_provider_card(
         ]),
         Line::from(vec![
             Span::styled("auth ", muted()),
-            Span::raw(provider_auth(&state.resolved, member)),
+            Span::raw(health.auth_mode),
             Span::raw("  "),
+            Span::styled("src ", muted()),
+            Span::raw(studio_clip(&health.auth_source, 16)),
+        ]),
+        Line::from(vec![
             Span::styled("effort ", muted()),
-            Span::raw(provider_effort(state, member)),
+            Span::raw(health.effort),
+            Span::raw("  "),
+            Span::styled("cap ", muted()),
+            Span::raw(health.capability_mode),
         ]),
         Line::from(vec![
             Span::styled("model ", muted()),
-            Span::raw(studio_clip(&provider_model(state, member), 28)),
+            Span::raw(studio_clip(&health.model, 28)),
+        ]),
+        Line::from(vec![
+            Span::styled("bin ", muted()),
+            Span::styled(
+                health.binary_status,
+                strong(status_color(health.binary_status)),
+            ),
+            Span::raw("  "),
+            Span::raw(studio_clip(&health.binary, 28)),
         ]),
         Line::from(vec![
             Span::styled("in ", muted()),
@@ -1775,7 +2633,8 @@ fn render_configuration(frame: &mut Frame<'_>, area: Rect, state: &StudioState) 
             Line::from("Tab cycles panels. Up/Down selects."),
             Line::from("Left/Right changes toggles and numeric values."),
             Line::from("Enter edits paths, lists, prompts, and Linear filters."),
-            Line::from("r runs, e edits prompt, ? toggles help."),
+            Line::from("r runs, c cancels the active job, e edits prompt."),
+            Line::from("? toggles help."),
             Line::from("Ctrl+C twice exits without surprise."),
         ]
     } else {
@@ -1844,6 +2703,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
         Span::raw("   "),
         Span::styled("r", strong(STUDIO_GOLD)),
         Span::raw(" run  "),
+        Span::styled("c", strong(STUDIO_GOLD)),
+        Span::raw(" cancel  "),
         Span::styled("e", strong(STUDIO_GOLD)),
         Span::raw(" prompt  "),
         Span::styled("Tab", strong(STUDIO_GOLD)),
@@ -1982,6 +2843,89 @@ fn provider_model(state: &StudioState, member: &str) -> String {
         _ => None,
     };
     value.unwrap_or("default").to_string()
+}
+
+struct ProviderHealth {
+    binary: String,
+    binary_status: &'static str,
+    auth_mode: String,
+    auth_source: String,
+    model: String,
+    effort: String,
+    capability_mode: String,
+}
+
+fn provider_health(state: &StudioState, member: &str) -> ProviderHealth {
+    let binary = resolve_binary(member);
+    let binary_status = if command_available(&binary) {
+        "ok"
+    } else {
+        "missing"
+    };
+    ProviderHealth {
+        binary,
+        binary_status,
+        auth_mode: provider_auth(&state.resolved, member),
+        auth_source: provider_auth_source(state, member),
+        model: provider_model(state, member),
+        effort: provider_effort(state, member),
+        capability_mode: provider_capability(&state.resolved, member).mode,
+    }
+}
+
+fn provider_auth_source(state: &StudioState, member: &str) -> String {
+    let auth = provider_auth(&state.resolved, member);
+    match member {
+        "codex" if auth == "api-key" => env_source("OPENAI_API_KEY"),
+        "claude" if auth == "api-key" => env_source("ANTHROPIC_API_KEY"),
+        "gemini" if auth == "api-key" => env_source("GEMINI_API_KEY"),
+        "codex" => auth_local_source(&auth, "codex cli"),
+        "claude" => auth_local_source(&auth, "claude cli"),
+        "gemini" => auth_local_source(&auth, "gemini cli"),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn env_source(name: &str) -> String {
+    if std::env::var(name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        format!("env:{name}")
+    } else {
+        format!("env:{name} missing")
+    }
+}
+
+fn auth_local_source(auth: &str, source: &str) -> String {
+    match auth {
+        "auto" => "auto".to_string(),
+        "social-login" | "login" | "oauth" | "keychain" => source.to_string(),
+        value => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+fn provider_health_lines(state: &StudioState) -> Vec<String> {
+    state
+        .resolved
+        .members
+        .iter()
+        .map(|member| {
+            let health = provider_health(state, member);
+            format!(
+                "{} bin:{} {} auth:{}/{} model:{} effort:{} cap:{}",
+                member,
+                health.binary_status,
+                health.binary,
+                health.auth_mode,
+                health.auth_source,
+                health.model,
+                health.effort,
+                health.capability_mode
+            )
+        })
+        .collect()
 }
 
 fn total_session_tokens(state: &StudioState) -> usize {
@@ -2278,6 +3222,11 @@ fn result_lines(state: &StudioState) -> Vec<String> {
         lines.extend(state.run_events.iter().cloned());
         lines.push(String::new());
     }
+    if let Some(auth) = &state.last_auth_result {
+        lines.push("Auth status".to_string());
+        lines.extend(auth.lines().take(8).map(ToString::to_string));
+        lines.push(String::new());
+    }
     let Some(result) = &state.last_result else {
         if lines.is_empty() {
             lines.push("No run yet".to_string());
@@ -2560,6 +3509,19 @@ mod tests {
     }
 
     #[test]
+    fn raw_etx_counts_as_second_ctrl_c() {
+        let mut state = test_state("hello");
+        let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        let raw_etx = Event::Key(KeyEvent::new(KeyCode::Char('\u{3}'), KeyModifiers::NONE));
+
+        let first = handle_event(&mut state, ctrl_c).unwrap();
+        assert!(matches!(first, StudioAction::None));
+
+        let second = handle_event(&mut state, raw_etx).unwrap();
+        assert!(matches!(second, StudioAction::Quit));
+    }
+
+    #[test]
     fn progress_events_update_dashboard_without_leaving_studio() {
         let mut state = test_state("hello");
         apply_progress_event(
@@ -2581,6 +3543,119 @@ mod tests {
         assert!(rendered.contains("Live run log"));
         assert!(rendered.contains("spawn codex"));
         assert!(rendered.contains("running"));
+    }
+
+    #[test]
+    fn studio_actions_are_dashboard_jobs() {
+        let actions = [
+            (StudioAction::RunAmonHen, StudioJobKind::AmonHen),
+            (StudioAction::SocialLogin, StudioJobKind::SocialLogin),
+            (StudioAction::AuthStatus, StudioJobKind::AuthStatus),
+            (
+                StudioAction::CapabilitiesStatus,
+                StudioJobKind::CapabilitiesStatus,
+            ),
+            (StudioAction::LinearStatus, StudioJobKind::LinearStatus),
+            (StudioAction::LinearDeliver, StudioJobKind::LinearDeliver),
+        ];
+
+        for (action, kind) in actions {
+            assert_eq!(dashboard_job_kind(&action), Some(kind));
+        }
+        assert_eq!(dashboard_job_kind(&StudioAction::Quit), None);
+    }
+
+    #[test]
+    fn cancel_hotkey_marks_active_job_cancelled() {
+        let mut state = test_state("hello");
+        let (_tx, rx) = mpsc::channel();
+        state.run_job = Some(StudioRunJob {
+            rx,
+            started: Instant::now(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            kind: StudioJobKind::AuthStatus,
+        });
+
+        let action = handle_event(
+            &mut state,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+        )
+        .unwrap();
+
+        assert!(matches!(action, StudioAction::CancelJob));
+        cancel_studio_job(&mut state);
+        let job = state.run_job.as_ref().unwrap();
+        assert!(job.cancel.load(Ordering::Relaxed));
+        assert!(state.status.contains("cancellation requested"));
+        assert!(state
+            .run_events
+            .iter()
+            .any(|line| line.contains("cancellation")));
+    }
+
+    #[test]
+    fn profile_save_load_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut state = test_state("first prompt");
+        state.profile_path = temp.path().join("studio-profiles.json");
+        state.profile_name = "roundtrip".to_string();
+        state.resolved.raw.codex_model = Some("profile-model".to_string());
+        state.resolved.raw.linear_issue = vec!["ENG-123".to_string()];
+        state.resolved.raw.linear_until_complete = true;
+        state.resolved.raw.linear_limit = 7;
+        state.resolved.raw.linear_max_concurrency = 3;
+        state.resolved.raw.linear_workflow_file = Some(PathBuf::from("docs/workflow.md"));
+        state.resolved.raw.delivery_phases = vec!["plan".to_string(), "verify".to_string()];
+        state.resolved.raw.codex_capabilities = "override".to_string();
+
+        save_studio_profile(&mut state, "roundtrip").unwrap();
+
+        state.prompt = "changed prompt".to_string();
+        state.resolved.raw.codex_model = Some("changed-model".to_string());
+        state.resolved.raw.linear_issue.clear();
+        state.resolved.raw.linear_until_complete = false;
+        state.resolved.raw.linear_limit = 1;
+        state.resolved.raw.linear_max_concurrency = 1;
+        state.resolved.raw.linear_workflow_file = None;
+        state.resolved.raw.delivery_phases.clear();
+        state.resolved.raw.codex_capabilities = "inherit".to_string();
+        load_and_apply_studio_profile(&mut state, "roundtrip").unwrap();
+
+        assert_eq!(state.prompt, "first prompt");
+        assert_eq!(
+            state.resolved.raw.codex_model.as_deref(),
+            Some("profile-model")
+        );
+        assert_eq!(state.resolved.raw.linear_issue, vec!["ENG-123"]);
+        assert!(state.resolved.raw.linear_until_complete);
+        assert_eq!(state.resolved.raw.linear_limit, 7);
+        assert_eq!(state.resolved.raw.linear_max_concurrency, 3);
+        assert_eq!(
+            state.resolved.raw.linear_workflow_file.as_deref(),
+            Some(Path::new("docs/workflow.md"))
+        );
+        assert_eq!(state.resolved.raw.delivery_phases, vec!["plan", "verify"]);
+        assert_eq!(state.resolved.raw.codex_capabilities, "override");
+        assert!(state.profile_names.contains(&"roundtrip".to_string()));
+    }
+
+    #[test]
+    fn provider_health_renders_onboarding_data() {
+        let state = test_state("hello");
+
+        let health_lines = provider_health_lines(&state);
+        assert!(health_lines.iter().any(|line| {
+            line.contains("codex bin:")
+                && line.contains("auth:")
+                && line.contains("model:gpt-5.2")
+                && line.contains("effort:")
+                && line.contains("cap:")
+        }));
+
+        let (rendered, _) = render_to_string(&state, 180, 46);
+        assert!(rendered.contains("bin"));
+        assert!(rendered.contains("cap"));
+        assert!(rendered.contains("gpt-5.2"));
     }
 
     fn render_to_string(state: &StudioState, width: u16, height: u16) -> (String, bool) {
@@ -2607,12 +3682,14 @@ mod tests {
         let claude = test_engine_result("claude", "lead", 900, 400, 2);
         let gemini = test_engine_result("gemini", "executor", 700, 250, 0);
         let summary = test_engine_result("codex", "synthesis", 500, 200, 0);
+        let members = vec![codex, claude, gemini];
+        let workflow = build_workflow(&state.resolved);
         AmonHenResult {
             query: state.prompt.clone(),
             cwd: state.resolved.cwd.display().to_string(),
             members_requested: state.resolved.members.clone(),
             summarizer_requested: state.resolved.raw.summarizer.clone(),
-            workflow: build_workflow(&state.resolved),
+            workflow: workflow.clone(),
             prompt_commands: vec![CommandTelemetry {
                 command: "cargo test --workspace --locked".to_string(),
                 status: "ok".to_string(),
@@ -2623,7 +3700,15 @@ mod tests {
                 stderr_chars: 0,
                 timed_out: false,
             }],
-            members: vec![codex, claude, gemini],
+            iterations: vec![iteration_record(
+                1,
+                workflow.iterations,
+                members.clone(),
+                1200,
+                None,
+                None,
+            )],
+            members,
             summary,
         }
     }
@@ -2710,6 +3795,9 @@ mod tests {
             last_capability_result: None,
             run_job: None,
             run_events: Vec::new(),
+            profile_name: "default".to_string(),
+            profile_path: PathBuf::from(".amon-hen-studio-profiles.json"),
+            profile_names: Vec::new(),
             provider_status: HashMap::new(),
             provider_detail: HashMap::new(),
             status: "Ready".to_string(),

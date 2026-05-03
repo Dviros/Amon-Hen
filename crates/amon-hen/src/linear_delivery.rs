@@ -3,6 +3,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const DEFAULT_LINEAR_ENDPOINT: &str = "https://api.linear.app/graphql";
@@ -11,13 +12,13 @@ const DEFAULT_WORKFLOW_FILE: &str = "WORKFLOW.md";
 const DEFAULT_MAX_ATTEMPTS: usize = 3;
 const DEFAULT_POLL_INTERVAL_MS: u64 = 60_000;
 const DEFAULT_DELIVERY_PHASES: [&str; 4] = ["plan", "implement", "verify", "ship"];
-const TERMINAL_STATUSES: [&str; 3] = ["delivered", "review_ready", "ci_passed"];
+const TERMINAL_STATUSES: [&str; 5] = ["delivered", "review_ready", "ci_passed", "blocked", "no_op"];
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct LinearDeliveryResult {
     provider: String,
     pub(super) success: bool,
-    duration_ms: u128,
+    pub(super) duration_ms: u128,
     issue_count: usize,
     phases: Vec<String>,
     watch: bool,
@@ -62,6 +63,9 @@ struct PhaseDeliveryResult {
     summary_status: String,
     summarizer: String,
     output: String,
+    git_before: GitSnapshot,
+    git_after: GitSnapshot,
+    gates: Vec<DeliveryGateResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +75,43 @@ struct CompletionResult {
     gate: String,
     detail: String,
     pr_url: Option<String>,
+    gates: Vec<DeliveryGateResult>,
+    repo_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DeliveryGateResult {
+    name: String,
+    status: String,
+    detail: String,
+    command: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GitSnapshot {
+    available: bool,
+    inside_work_tree: bool,
+    branch: Option<String>,
+    head: Option<String>,
+    status: String,
+    diff_name_status: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceSnapshot {
+    git: GitSnapshot,
+    fingerprint: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DeliveryHarnessResult {
+    gates: Vec<DeliveryGateResult>,
+    repo_changed: bool,
+    blocked_detail: Option<String>,
+    no_op_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,6 +225,8 @@ struct DeliveryCounts {
     delivered: usize,
     review_ready: usize,
     ci_passed: usize,
+    blocked: usize,
+    no_op: usize,
     running: usize,
     retry_wait: usize,
     failed: usize,
@@ -237,10 +280,12 @@ struct DeliveryPaths {
     events_file: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct DeliveryEventContext {
     paths: DeliveryPaths,
     event_lock: Arc<Mutex<()>>,
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 struct DeliveryRunContext<'a> {
@@ -340,6 +385,8 @@ pub(super) fn render_linear_status(status: &LinearStatus) -> String {
         format!("- delivered: {}", status.counts.delivered),
         format!("- review_ready: {}", status.counts.review_ready),
         format!("- ci_passed: {}", status.counts.ci_passed),
+        format!("- blocked: {}", status.counts.blocked),
+        format!("- no_op: {}", status.counts.no_op),
         format!("- running: {}", status.counts.running),
         format!("- retry_wait: {}", status.counts.retry_wait),
         format!("- failed: {}", status.counts.failed),
@@ -349,7 +396,11 @@ pub(super) fn render_linear_status(status: &LinearStatus) -> String {
     lines.join("\n")
 }
 
-pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliveryResult, String> {
+pub(super) fn run_linear_delivery_with_progress(
+    resolved: &ResolvedArgs,
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<LinearDeliveryResult, String> {
     let started = Instant::now();
     let paths = resolve_delivery_paths(resolved);
     let auth = resolve_linear_authorization(resolved, false)?
@@ -362,6 +413,8 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
     let context = DeliveryEventContext {
         paths: paths.clone(),
         event_lock: Arc::new(Mutex::new(())),
+        progress,
+        cancel,
     };
     let mut poll_results = Vec::new();
     let mut poll_count = 0usize;
@@ -388,6 +441,7 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
     )?;
 
     loop {
+        ensure_not_cancelled(&context)?;
         poll_count += 1;
         let run_context = DeliveryRunContext {
             resolved,
@@ -429,7 +483,7 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
         } else {
             resolved.raw.linear_poll_interval.saturating_mul(1000)
         };
-        thread::sleep(Duration::from_millis(poll_interval.max(1000)));
+        sleep_with_cancel(&context, Duration::from_millis(poll_interval.max(1000)))?;
     }
 
     let issues = poll_results
@@ -467,16 +521,44 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
     Ok(result)
 }
 
+fn ensure_not_cancelled(context: &DeliveryEventContext) -> Result<(), String> {
+    if context
+        .cancel
+        .as_ref()
+        .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+    {
+        emit_event(
+            context,
+            "delivery_cancelled",
+            json!({ "reason": "cancel requested" }),
+        )?;
+        return Err("Linear delivery cancelled".to_string());
+    }
+    Ok(())
+}
+
+fn sleep_with_cancel(context: &DeliveryEventContext, duration: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        ensure_not_cancelled(context)?;
+        let remaining = duration.saturating_sub(started.elapsed());
+        thread::sleep(remaining.min(Duration::from_millis(250)));
+    }
+    Ok(())
+}
+
 fn run_linear_delivery_poll(
     context: &DeliveryRunContext<'_>,
     state: &mut DeliveryState,
     poll: usize,
 ) -> Result<DeliveryPollResult, String> {
+    ensure_not_cancelled(context.events)?;
     emit_event(
         context.events,
         "delivery_poll_started",
         json!({ "poll": poll }),
     )?;
+    ensure_not_cancelled(context.events)?;
     let issues = fetch_linear_issues(context.resolved, context.auth)?;
     reconcile_delivery_state(
         state,
@@ -528,10 +610,12 @@ fn run_linear_issue_batch(
     state: &mut DeliveryState,
     eligible: Vec<LinearIssue>,
 ) -> Result<Vec<IssueDeliveryResult>, String> {
+    ensure_not_cancelled(context.events)?;
     let concurrency = context.resolved.raw.linear_max_concurrency.max(1);
     if concurrency == 1 {
         let mut issue_results = Vec::new();
         for issue in eligible {
+            ensure_not_cancelled(context.events)?;
             issue_results.push(run_linear_issue_delivery(
                 context.resolved,
                 context.auth,
@@ -547,6 +631,7 @@ fn run_linear_issue_batch(
 
     let mut issue_results = Vec::new();
     for chunk in eligible.chunks(concurrency) {
+        ensure_not_cancelled(context.events)?;
         let mut items = Vec::with_capacity(chunk.len());
         for issue in chunk.iter().cloned() {
             items.push(start_linear_issue_delivery(
@@ -591,6 +676,7 @@ fn run_linear_issue_batch(
         })?;
 
         for (result, issue_state) in completed {
+            ensure_not_cancelled(context.events)?;
             state
                 .issues
                 .insert(issue_state.identifier.clone(), issue_state);
@@ -683,16 +769,21 @@ fn finish_linear_issue_delivery(
         .linear_retry_base
         .saturating_mul(1000)
         .max(1000);
+    let workspace_path = Path::new(&workspace.cwd);
+    let delivery_baseline = capture_workspace_snapshot(workspace_path);
 
     let mut phase_results = Vec::new();
     let mut conversation = Vec::<(String, String)>::new();
     let mut issue_success = true;
+    let mut local_blocker = None;
     for phase in phases {
+        ensure_not_cancelled(context)?;
         emit_event(
             context,
             "delivery_phase_started",
             json!({ "issue": &issue, "phase": phase }),
         )?;
+        let git_before = capture_git_snapshot(workspace_path);
         let mut phase_resolved = resolved.clone();
         phase_resolved.cwd = PathBuf::from(&workspace.cwd);
         phase_resolved.raw.cwd = phase_resolved.cwd.clone();
@@ -703,19 +794,28 @@ fn finish_linear_issue_delivery(
             pick_phase_lead(phase, &resolved.members, resolved.raw.lead.as_deref());
         phase_resolved.prompt =
             build_delivery_phase_prompt(phase, &issue, resolved, &conversation, workflow_policy);
-        let prompt_context = build_prompt_context(&phase_resolved)?;
-        let result = run_amon_hen(
+        let prompt_context =
+            build_prompt_context_with_progress(&phase_resolved, context.progress.clone())?;
+        let result = run_amon_hen_with_progress_and_cancel(
             &phase_resolved,
             prompt_context.prompt,
             prompt_context.commands,
+            context.progress.clone(),
+            context.cancel.clone(),
         );
         let summary = result.summary.clone();
-        let success = summary.status == "ok";
+        let git_after = capture_git_snapshot(workspace_path);
+        let phase_gates = evaluate_phase_gates(workspace_path, &git_before, &git_after);
+        let gate_blocker = first_blocked_gate(&phase_gates);
+        let success = summary.status == "ok" && gate_blocker.is_none();
         let phase_result = PhaseDeliveryResult {
             phase: phase.clone(),
             summary_status: summary.status.clone(),
             summarizer: summary.name.clone(),
             output: summary.output.clone(),
+            git_before,
+            git_after,
+            gates: phase_gates.clone(),
         };
         phase_results.push(phase_result);
         conversation.push((
@@ -734,10 +834,15 @@ fn finish_linear_issue_delivery(
         });
         if !success {
             issue_state.last_error = Some(if summary.detail.trim().is_empty() {
-                format!("{phase} failed")
+                gate_blocker
+                    .clone()
+                    .unwrap_or_else(|| format!("{phase} failed"))
             } else {
-                summary.detail.clone()
+                gate_blocker
+                    .clone()
+                    .unwrap_or_else(|| summary.detail.clone())
             });
+            local_blocker = gate_blocker;
         }
         emit_event(
             context,
@@ -747,13 +852,39 @@ fn finish_linear_issue_delivery(
                 "phase": phase,
                 "success": success,
                 "summaryStatus": summary.status,
-                "summarizer": summary.name
+                "summarizer": summary.name,
+                "gates": phase_gates
             }),
         )?;
         if !success {
             issue_success = false;
             break;
         }
+    }
+
+    let mut harness = if issue_success {
+        evaluate_delivery_harness(
+            workspace_path,
+            &delivery_baseline,
+            &issue,
+            issue_state,
+            &phase_results,
+            context.cancel.clone(),
+        )
+    } else {
+        DeliveryHarnessResult {
+            gates: vec![],
+            repo_changed: false,
+            blocked_detail: local_blocker,
+            no_op_detail: None,
+        }
+    };
+    if let Some(blocker) = harness.blocked_detail.clone() {
+        issue_success = false;
+        issue_state.last_error = Some(blocker);
+    } else if let Some(no_op) = harness.no_op_detail.clone() {
+        issue_success = false;
+        issue_state.last_error = Some(no_op);
     }
 
     let mut media_attachments = Vec::new();
@@ -795,18 +926,31 @@ fn finish_linear_issue_delivery(
             Some(issue_state),
             &workspace,
             &phase_results,
+            &harness,
         )
     } else {
+        let (status, detail) = if let Some(blocker) = harness.blocked_detail.clone() {
+            ("blocked".to_string(), blocker)
+        } else if let Some(no_op) = harness.no_op_detail.clone() {
+            ("no_op".to_string(), no_op)
+        } else {
+            (
+                "retry_wait".to_string(),
+                if issue_success {
+                    "One or more Linear media attachments failed.".to_string()
+                } else {
+                    "One or more delivery phases failed.".to_string()
+                },
+            )
+        };
         CompletionResult {
             success: false,
-            status: "retry_wait".to_string(),
+            status,
             gate: normalize_completion_gate(&resolved.raw.linear_completion_gate),
-            detail: if issue_success {
-                "One or more Linear media attachments failed.".to_string()
-            } else {
-                "One or more delivery phases failed.".to_string()
-            },
+            detail,
             pr_url: None,
+            gates: std::mem::take(&mut harness.gates),
+            repo_changed: harness.repo_changed,
         }
     };
     let state_update = if completion.success && resolved.raw.linear_update_review_state {
@@ -886,7 +1030,7 @@ fn finish_linear_issue_delivery(
         }
     } else {
         issue_state.last_error = Some(completion.detail.clone());
-        schedule_retry(issue_state, max_attempts, retry_delay_ms);
+        apply_failed_completion_state(issue_state, &completion, max_attempts, retry_delay_ms);
     }
     let result_issue_state = issue_state.clone();
     emit_event(
@@ -963,10 +1107,28 @@ pub(super) fn render_linear_delivery_result(result: &LinearDeliveryResult) -> St
         if !issue.completion.detail.trim().is_empty() {
             lines.push(format!("Completion: {}", issue.completion.detail));
         }
+        lines.push(format!("Repo changed: {}", issue.completion.repo_changed));
         for phase in &issue.phases {
             lines.push(format!(
                 "- {}: {} via {}",
                 phase.phase, phase.summary_status, phase.summarizer
+            ));
+            for gate in phase.gates.iter().filter(|gate| gate.status != "ok") {
+                lines.push(format!(
+                    "  - gate {}: {} ({})",
+                    gate.name, gate.status, gate.detail
+                ));
+            }
+        }
+        for gate in issue
+            .completion
+            .gates
+            .iter()
+            .filter(|gate| gate.status != "ok")
+        {
+            lines.push(format!(
+                "- completion gate {}: {} ({})",
+                gate.name, gate.status, gate.detail
             ));
         }
         for media in &issue.media_attachments {
@@ -1558,6 +1720,7 @@ fn build_delivery_comment_body(
         String::new(),
         format!("Status: {}", completion.status),
         format!("Gate: {}", completion.gate),
+        format!("Repo changed: {}", completion.repo_changed),
         format!("Workspace strategy: {}", workspace.strategy),
     ];
     if let Some(branch) = &workspace.branch {
@@ -1576,6 +1739,19 @@ fn build_delivery_comment_body(
             "- {}: {} via {}",
             phase.phase, phase.summary_status, phase.summarizer
         ));
+        for gate in phase.gates.iter().filter(|gate| gate.status != "ok") {
+            lines.push(format!("  - gate {}: {}", gate.name, gate.status));
+        }
+    }
+    if !completion.gates.is_empty() {
+        lines.push(String::new());
+        lines.push("Delivery gates:".to_string());
+        for gate in &completion.gates {
+            lines.push(format!(
+                "- {}: {} - {}",
+                gate.name, gate.status, gate.detail
+            ));
+        }
     }
     if !media.is_empty() {
         lines.push(String::new());
@@ -1598,22 +1774,533 @@ fn build_delivery_comment_body(
     truncate(&lines.join("\n"), 16_000)
 }
 
+fn capture_workspace_snapshot(cwd: &Path) -> WorkspaceSnapshot {
+    WorkspaceSnapshot {
+        git: capture_git_snapshot(cwd),
+        fingerprint: workspace_fingerprint(cwd),
+    }
+}
+
+fn capture_git_snapshot(cwd: &Path) -> GitSnapshot {
+    let inside_args = ["rev-parse".to_string(), "--is-inside-work-tree".to_string()];
+    let inside = run_command(CommandRequest::new("git", &inside_args, cwd, 30_000));
+    if inside.error.is_some() {
+        return GitSnapshot {
+            available: false,
+            inside_work_tree: false,
+            branch: None,
+            head: None,
+            status: String::new(),
+            diff_name_status: String::new(),
+            detail: "Git is not installed or not on PATH.".to_string(),
+        };
+    }
+    if inside.code != Some(0) || inside.stdout.trim() != "true" {
+        return GitSnapshot {
+            available: true,
+            inside_work_tree: false,
+            branch: None,
+            head: None,
+            status: String::new(),
+            diff_name_status: String::new(),
+            detail: "Workspace is not a git work tree.".to_string(),
+        };
+    }
+    let branch = git_stdout(cwd, &["branch", "--show-current"]);
+    let head = git_stdout(cwd, &["rev-parse", "HEAD"]);
+    let status =
+        git_stdout(cwd, &["status", "--porcelain=v1", "--untracked-files=all"]).unwrap_or_default();
+    let diff_name_status =
+        git_stdout(cwd, &["diff", "--name-status", "--no-ext-diff"]).unwrap_or_default();
+    GitSnapshot {
+        available: true,
+        inside_work_tree: true,
+        branch,
+        head,
+        status,
+        diff_name_status,
+        detail: "Git state captured.".to_string(),
+    }
+}
+
+fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    let result = run_command(CommandRequest::new("git", &args, cwd, 30_000));
+    if result.code == Some(0) {
+        Some(result.stdout.trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn workspace_fingerprint(cwd: &Path) -> Vec<String> {
+    let mut entries = Vec::new();
+    collect_workspace_fingerprint(cwd, cwd, &mut entries, 0);
+    entries.sort();
+    entries
+}
+
+fn collect_workspace_fingerprint(
+    root: &Path,
+    path: &Path,
+    entries: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth > 16 {
+        return;
+    }
+    let Ok(read_dir) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if should_skip_delivery_scan_path(&path, &name) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            collect_workspace_fingerprint(root, &path, entries, depth + 1);
+            continue;
+        }
+        if !metadata.is_file() || metadata.len() > 1_000_000 {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let digest = fs::read(&path)
+            .map(|bytes| {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                bytes.hash(&mut hasher);
+                hasher.finish()
+            })
+            .unwrap_or(0);
+        entries.push(format!("{relative}:{}:{digest:x}", metadata.len()));
+    }
+}
+
+fn evaluate_phase_gates(
+    cwd: &Path,
+    before: &GitSnapshot,
+    after: &GitSnapshot,
+) -> Vec<DeliveryGateResult> {
+    let mut gates = Vec::new();
+    gates.push(git_state_gate(before, after));
+    gates.extend(scan_workspace_for_sensitive_evidence(cwd));
+    gates
+}
+
+fn evaluate_delivery_harness(
+    cwd: &Path,
+    baseline: &WorkspaceSnapshot,
+    issue: &LinearIssue,
+    issue_state: &IssueDeliveryState,
+    phases: &[PhaseDeliveryResult],
+    cancel: Option<Arc<AtomicBool>>,
+) -> DeliveryHarnessResult {
+    let final_snapshot = capture_workspace_snapshot(cwd);
+    let mut gates = Vec::new();
+    let repo_changed = workspace_snapshot_changed(baseline, &final_snapshot);
+    gates.push(change_detection_gate(
+        repo_changed,
+        baseline,
+        &final_snapshot,
+    ));
+    gates.extend(scan_workspace_for_sensitive_evidence(cwd));
+    gates.extend(run_delivery_validation_commands(cwd, cancel));
+    let pr_url = collect_pr_url(
+        issue,
+        Some(issue_state),
+        &IssueWorkspace {
+            cwd: cwd.display().to_string(),
+            strategy: issue_state
+                .workspace_strategy
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            branch: issue_state.branch.clone(),
+        },
+        phases,
+    );
+    let blocked_detail = first_blocked_gate(&gates);
+    let no_op_detail = if !repo_changed && pr_url.is_none() {
+        Some(
+            "No concrete repository change or GitHub PR was produced by the delivery phases."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    DeliveryHarnessResult {
+        gates,
+        repo_changed,
+        blocked_detail,
+        no_op_detail,
+    }
+}
+
+fn workspace_snapshot_changed(before: &WorkspaceSnapshot, after: &WorkspaceSnapshot) -> bool {
+    if before.git.inside_work_tree && after.git.inside_work_tree {
+        before.git.head != after.git.head
+            || before.git.status != after.git.status
+            || before.git.diff_name_status != after.git.diff_name_status
+    } else {
+        before.fingerprint != after.fingerprint
+    }
+}
+
+fn git_state_gate(before: &GitSnapshot, after: &GitSnapshot) -> DeliveryGateResult {
+    if !after.available || !after.inside_work_tree {
+        return DeliveryGateResult {
+            name: "git-state".to_string(),
+            status: "skipped".to_string(),
+            detail: after.detail.clone(),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+        };
+    }
+    let dirty = !after.status.trim().is_empty();
+    let head_changed = before.head != after.head;
+    let detail = if dirty && head_changed {
+        "Git HEAD changed and the workspace has an uncommitted diff.".to_string()
+    } else if dirty {
+        "Workspace has an uncommitted diff.".to_string()
+    } else if head_changed {
+        "Git HEAD changed and workspace is clean.".to_string()
+    } else {
+        "Git state unchanged and workspace is clean.".to_string()
+    };
+    DeliveryGateResult {
+        name: "git-state".to_string(),
+        status: "ok".to_string(),
+        detail,
+        command: None,
+        exit_code: None,
+        duration_ms: None,
+    }
+}
+
+fn change_detection_gate(
+    repo_changed: bool,
+    baseline: &WorkspaceSnapshot,
+    final_snapshot: &WorkspaceSnapshot,
+) -> DeliveryGateResult {
+    let detail = if repo_changed {
+        "Repository or workspace content changed during delivery.".to_string()
+    } else if baseline.git.inside_work_tree && final_snapshot.git.inside_work_tree {
+        "No git HEAD, status, or diff change was detected.".to_string()
+    } else {
+        "No workspace file content change was detected.".to_string()
+    };
+    DeliveryGateResult {
+        name: "change-detection".to_string(),
+        status: if repo_changed { "ok" } else { "no_op" }.to_string(),
+        detail,
+        command: None,
+        exit_code: None,
+        duration_ms: None,
+    }
+}
+
+fn scan_workspace_for_sensitive_evidence(cwd: &Path) -> Vec<DeliveryGateResult> {
+    let mut findings = Vec::new();
+    let git = capture_git_snapshot(cwd);
+    if git.inside_work_tree {
+        for path in changed_git_paths(&git.status) {
+            let path = cwd.join(path);
+            collect_sensitive_findings_for_path(cwd, &path, &mut findings, 0);
+            if findings.len() >= 12 {
+                break;
+            }
+        }
+    } else {
+        collect_sensitive_findings(cwd, cwd, &mut findings, 0);
+    }
+    if findings.is_empty() {
+        vec![DeliveryGateResult {
+            name: "secret-local-path-scan".to_string(),
+            status: "ok".to_string(),
+            detail: "No obvious secrets or local machine paths were detected in changed workspace files.".to_string(),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+        }]
+    } else {
+        vec![DeliveryGateResult {
+            name: "secret-local-path-scan".to_string(),
+            status: "blocked".to_string(),
+            detail: format!(
+                "Potential secret or local path evidence detected: {}.",
+                findings.join("; ")
+            ),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+        }]
+    }
+}
+
+fn changed_git_paths(status: &str) -> Vec<PathBuf> {
+    status
+        .lines()
+        .filter_map(|line| {
+            let path = line.get(3..)?.trim();
+            let path = path.rsplit(" -> ").next().unwrap_or(path).trim();
+            (!path.is_empty()).then(|| PathBuf::from(path))
+        })
+        .collect()
+}
+
+fn collect_sensitive_findings(root: &Path, path: &Path, findings: &mut Vec<String>, depth: usize) {
+    if findings.len() >= 12 || depth > 16 {
+        return;
+    }
+    let Ok(read_dir) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        if findings.len() >= 12 {
+            return;
+        }
+        let path = entry.path();
+        collect_sensitive_findings_for_path(root, &path, findings, depth);
+    }
+}
+
+fn collect_sensitive_findings_for_path(
+    root: &Path,
+    path: &Path,
+    findings: &mut Vec<String>,
+    depth: usize,
+) {
+    if findings.len() >= 12 {
+        return;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if should_skip_delivery_scan_path(path, name) {
+        return;
+    }
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.is_dir() {
+        collect_sensitive_findings(root, path, findings, depth + 1);
+        return;
+    }
+    if !metadata.is_file() || metadata.len() > 1_000_000 {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    if let Some(reason) = sensitive_text_reason(&text) {
+        let relative = path.strip_prefix(root).unwrap_or(path).display();
+        findings.push(format!("{relative} ({reason})"));
+    }
+}
+
+fn sensitive_text_reason(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("-----begin ") && lower.contains(" private key-----") {
+        return Some("private key");
+    }
+    if lower.contains("aws_secret_access_key")
+        || lower.contains("linear_api_key=")
+        || lower.contains("github_token=")
+        || lower.contains("ghp_")
+        || lower.contains("sk-")
+    {
+        return Some("token-like secret");
+    }
+    if text.contains("/Users/") || text.contains("/home/") || text.contains("C:\\Users\\") {
+        return Some("local absolute path");
+    }
+    None
+}
+
+fn should_skip_delivery_scan_path(path: &Path, name: &str) -> bool {
+    if matches!(
+        name,
+        ".git" | ".amon-hen" | "node_modules" | "dist" | "target" | ".next" | "coverage"
+    ) {
+        return true;
+    }
+    path.components().any(|component| {
+        let text = component.as_os_str().to_string_lossy();
+        matches!(
+            text.as_ref(),
+            ".git" | ".amon-hen" | "node_modules" | "dist" | "target" | ".next" | "coverage"
+        )
+    })
+}
+
+fn run_delivery_validation_commands(
+    cwd: &Path,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Vec<DeliveryGateResult> {
+    let mut commands = detect_delivery_validation_commands(cwd);
+    if commands.is_empty() {
+        return vec![DeliveryGateResult {
+            name: "test-build-capture".to_string(),
+            status: "skipped".to_string(),
+            detail: "No configured Cargo or npm test/build commands were detected.".to_string(),
+            command: None,
+            exit_code: None,
+            duration_ms: None,
+        }];
+    }
+    commands
+        .drain(..)
+        .map(|(name, command, args)| {
+            let result = run_command(
+                CommandRequest::new(&command, &args, cwd, 600_000).cancel(cancel.clone()),
+            );
+            let mut gate = command_gate(&name, &result);
+            gate.detail = truncate(&gate.detail, 1_200);
+            gate
+        })
+        .collect()
+}
+
+fn detect_delivery_validation_commands(cwd: &Path) -> Vec<(String, String, Vec<String>)> {
+    let mut commands = Vec::new();
+    if cwd.join("Cargo.toml").exists() {
+        commands.push((
+            "cargo-test".to_string(),
+            "cargo".to_string(),
+            vec!["test".to_string(), "--all".to_string()],
+        ));
+        commands.push((
+            "cargo-build".to_string(),
+            "cargo".to_string(),
+            vec!["build".to_string(), "--all".to_string()],
+        ));
+    }
+    if let Ok(text) = fs::read_to_string(cwd.join("package.json")) {
+        let scripts = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|value| value.get("scripts").cloned())
+            .unwrap_or(Value::Null);
+        if scripts.get("test").and_then(Value::as_str).is_some() {
+            commands.push((
+                "npm-test".to_string(),
+                "npm".to_string(),
+                vec![
+                    "run".to_string(),
+                    "test".to_string(),
+                    "--if-present".to_string(),
+                ],
+            ));
+        }
+        if scripts.get("build").and_then(Value::as_str).is_some() {
+            commands.push((
+                "npm-build".to_string(),
+                "npm".to_string(),
+                vec![
+                    "run".to_string(),
+                    "build".to_string(),
+                    "--if-present".to_string(),
+                ],
+            ));
+        }
+    }
+    commands
+}
+
+fn command_gate(name: &str, result: &CommandResult) -> DeliveryGateResult {
+    let status = if result.error.is_some() || result.timed_out || result.code != Some(0) {
+        "blocked"
+    } else {
+        "ok"
+    };
+    DeliveryGateResult {
+        name: name.to_string(),
+        status: status.to_string(),
+        detail: if status == "ok" {
+            "Command completed successfully.".to_string()
+        } else {
+            compact_failure(result)
+        },
+        command: Some(format_command(&result.command, &result.args)),
+        exit_code: result.code,
+        duration_ms: Some(result.duration_ms),
+    }
+}
+
+fn first_blocked_gate(gates: &[DeliveryGateResult]) -> Option<String> {
+    gates
+        .iter()
+        .find(|gate| gate.status == "blocked")
+        .map(|gate| format!("{} blocked delivery: {}", gate.name, gate.detail))
+}
+
+fn delivery_success_detail(harness: &DeliveryHarnessResult, base: &str) -> String {
+    let passed = harness
+        .gates
+        .iter()
+        .filter(|gate| gate.status == "ok")
+        .map(|gate| gate.name.as_str())
+        .collect::<Vec<_>>();
+    if passed.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base} Passing gates: {}.", passed.join(", "))
+    }
+}
+
 fn evaluate_completion_gate(
     resolved: &ResolvedArgs,
     issue: &LinearIssue,
     issue_state: Option<&IssueDeliveryState>,
     workspace: &IssueWorkspace,
     phases: &[PhaseDeliveryResult],
+    harness: &DeliveryHarnessResult,
 ) -> CompletionResult {
     let gate = normalize_completion_gate(&resolved.raw.linear_completion_gate);
     let pr_url = collect_pr_url(issue, issue_state, workspace, phases);
+    if let Some(detail) = &harness.blocked_detail {
+        return CompletionResult {
+            success: false,
+            status: "blocked".to_string(),
+            gate,
+            detail: detail.clone(),
+            pr_url,
+            gates: harness.gates.clone(),
+            repo_changed: harness.repo_changed,
+        };
+    }
     if gate == "delivered" {
+        if let Some(detail) = &harness.no_op_detail {
+            return CompletionResult {
+                success: false,
+                status: "no_op".to_string(),
+                gate,
+                detail: detail.clone(),
+                pr_url,
+                gates: harness.gates.clone(),
+                repo_changed: harness.repo_changed,
+            };
+        }
         return CompletionResult {
             success: true,
             status: "delivered".to_string(),
             gate,
-            detail: "All delivery phases completed.".to_string(),
+            detail: delivery_success_detail(harness, "All delivery phases completed."),
             pr_url,
+            gates: harness.gates.clone(),
+            repo_changed: harness.repo_changed,
         };
     }
     if matches!(gate.as_str(), "human-review" | "review-or-ci") {
@@ -1627,8 +2314,13 @@ fn evaluate_completion_gate(
                     success: true,
                     status: "review_ready".to_string(),
                     gate,
-                    detail: format!("Linear state is {review_state}."),
+                    detail: delivery_success_detail(
+                        harness,
+                        &format!("Linear state is {review_state}."),
+                    ),
                     pr_url,
+                    gates: harness.gates.clone(),
+                    repo_changed: harness.repo_changed,
                 };
             }
         }
@@ -1637,21 +2329,66 @@ fn evaluate_completion_gate(
                 success: true,
                 status: "review_ready".to_string(),
                 gate,
-                detail: format!("GitHub PR is ready for review: {url}."),
+                detail: delivery_success_detail(
+                    harness,
+                    &format!("GitHub PR is ready for review: {url}."),
+                ),
                 pr_url,
+                gates: harness.gates.clone(),
+                repo_changed: harness.repo_changed,
             };
         }
-        if let Some(branch) = workspace.branch.as_ref() {
+        if let Some(detail) = &harness.no_op_detail {
             return CompletionResult {
-                success: true,
-                status: "review_ready".to_string(),
+                success: false,
+                status: "no_op".to_string(),
                 gate,
-                detail: format!("Branch is ready for review: {branch}."),
+                detail: detail.clone(),
                 pr_url,
+                gates: harness.gates.clone(),
+                repo_changed: harness.repo_changed,
+            };
+        }
+        if harness.repo_changed {
+            if let Some(branch) = workspace.branch.as_ref() {
+                return CompletionResult {
+                    success: true,
+                    status: "review_ready".to_string(),
+                    gate,
+                    detail: delivery_success_detail(
+                        harness,
+                        &format!("Branch has local delivery changes ready for review: {branch}."),
+                    ),
+                    pr_url,
+                    gates: harness.gates.clone(),
+                    repo_changed: harness.repo_changed,
+                };
+            }
+        }
+        if gate == "human-review" {
+            return CompletionResult {
+                success: false,
+                status: "blocked".to_string(),
+                gate,
+                detail: "Human-review gate requires a PR URL, matching Linear review state, or a changed review branch.".to_string(),
+                pr_url,
+                gates: harness.gates.clone(),
+                repo_changed: harness.repo_changed,
             };
         }
     }
-    check_github_ci(
+    if let Some(detail) = &harness.no_op_detail {
+        return CompletionResult {
+            success: false,
+            status: "no_op".to_string(),
+            gate,
+            detail: detail.clone(),
+            pr_url,
+            gates: harness.gates.clone(),
+            repo_changed: harness.repo_changed,
+        };
+    }
+    let mut completion = check_github_ci(
         Path::new(&workspace.cwd),
         pr_url
             .clone()
@@ -1660,7 +2397,10 @@ fn evaluate_completion_gate(
         &gate,
         resolved.raw.linear_ci_timeout,
         resolved.raw.linear_ci_poll_interval,
-    )
+    );
+    completion.gates.extend(harness.gates.clone());
+    completion.repo_changed = harness.repo_changed;
+    completion
 }
 
 fn check_github_ci(
@@ -1677,6 +2417,8 @@ fn check_github_ci(
             gate: gate.to_string(),
             detail: "No GitHub PR URL or branch was found for CI checks.".to_string(),
             pr_url: None,
+            gates: vec![],
+            repo_changed: false,
         };
     }
     let started = Instant::now();
@@ -1688,7 +2430,7 @@ fn check_github_ci(
             "--json".to_string(),
             "name,bucket,state,workflow,completedAt,link".to_string(),
         ];
-        let result = run_command("gh", &args, cwd, None, 120_000, HashMap::new(), None);
+        let result = run_command(CommandRequest::new("gh", &args, cwd, 120_000));
         let interpreted = interpret_github_checks(&result, &selector, gate);
         if interpreted.success
             || result.code != Some(8)
@@ -1709,6 +2451,8 @@ fn interpret_github_checks(result: &CommandResult, selector: &str, gate: &str) -
             gate: gate.to_string(),
             detail: "GitHub CLI (`gh`) is not installed or not on PATH.".to_string(),
             pr_url: extract_github_pr_url(selector),
+            gates: vec![command_gate("github-ci", result)],
+            repo_changed: false,
         };
     }
     let checks = serde_json::from_str::<Vec<Value>>(&result.stdout).unwrap_or_default();
@@ -1719,6 +2463,8 @@ fn interpret_github_checks(result: &CommandResult, selector: &str, gate: &str) -
             gate: gate.to_string(),
             detail: compact_failure(result),
             pr_url: extract_github_pr_url(selector),
+            gates: vec![command_gate("github-ci", result)],
+            repo_changed: false,
         };
     }
     let failed = checks
@@ -1734,10 +2480,12 @@ fn interpret_github_checks(result: &CommandResult, selector: &str, gate: &str) -
     if !failed.is_empty() {
         return CompletionResult {
             success: false,
-            status: "retry_wait".to_string(),
+            status: "blocked".to_string(),
             gate: gate.to_string(),
             detail: format!("GitHub checks failed: {}.", failed.join(", ")),
             pr_url: extract_github_pr_url(selector),
+            gates: vec![command_gate("github-ci", result)],
+            repo_changed: false,
         };
     }
     let passed = checks.iter().all(|check| {
@@ -1753,6 +2501,8 @@ fn interpret_github_checks(result: &CommandResult, selector: &str, gate: &str) -
             gate: gate.to_string(),
             detail: format!("GitHub checks passed for {selector}."),
             pr_url: extract_github_pr_url(selector),
+            gates: vec![command_gate("github-ci", result)],
+            repo_changed: false,
         }
     } else {
         CompletionResult {
@@ -1761,6 +2511,8 @@ fn interpret_github_checks(result: &CommandResult, selector: &str, gate: &str) -
             gate: gate.to_string(),
             detail: format!("GitHub checks are not complete for {selector}."),
             pr_url: extract_github_pr_url(selector),
+            gates: vec![command_gate("github-ci", result)],
+            repo_changed: false,
         }
     }
 }
@@ -1840,15 +2592,7 @@ fn prepare_issue_workspace(
             workspace_path.display().to_string(),
             "HEAD".to_string(),
         ];
-        let result = run_command(
-            "git",
-            &args,
-            &resolved.cwd,
-            None,
-            120_000,
-            HashMap::new(),
-            None,
-        );
+        let result = run_command(CommandRequest::new("git", &args, &resolved.cwd, 120_000));
         if result.code == Some(0) {
             return Ok(IssueWorkspace {
                 cwd: workspace_path.display().to_string(),
@@ -2046,9 +2790,33 @@ fn schedule_retry(issue_state: &mut IssueDeliveryState, max_attempts: usize, ret
     issue_state.next_retry_at = Some(next.to_rfc3339_opts(SecondsFormat::Secs, true));
 }
 
+fn apply_failed_completion_state(
+    issue_state: &mut IssueDeliveryState,
+    completion: &CompletionResult,
+    max_attempts: usize,
+    retry_base_ms: u64,
+) {
+    if matches!(completion.status.as_str(), "blocked" | "no_op") {
+        issue_state.status = completion.status.clone();
+        issue_state.next_retry_at = None;
+        issue_state.completed_at = Some(now_iso());
+        issue_state.completion_gate = Some(completion.gate.clone());
+        issue_state.completion_detail = Some(completion.detail.clone());
+        issue_state.pr_url = completion
+            .pr_url
+            .clone()
+            .or_else(|| issue_state.pr_url.clone());
+        return;
+    }
+    schedule_retry(issue_state, max_attempts, retry_base_ms);
+}
+
 fn is_terminal_status(status: &str, completion_gate: &str) -> bool {
     if !TERMINAL_STATUSES.contains(&status) {
         return false;
+    }
+    if matches!(status, "blocked" | "no_op") {
+        return true;
     }
     match completion_gate {
         "ci-success" => status == "ci_passed",
@@ -2192,7 +2960,26 @@ fn emit_event(
         "at": now_iso(),
         "payload": payload
     });
-    eprintln!("{}", render_delivery_progress_event(event_type, &payload));
+    let message = render_delivery_progress_event(event_type, &payload);
+    eprintln!("{message}");
+    let (stage, status) = delivery_progress_stage(event_type);
+    emit_runtime_event(
+        &context.progress,
+        false,
+        progress_event_with_context(
+            Some("linear"),
+            Some("delivery"),
+            stage,
+            status,
+            None,
+            None,
+            false,
+            None,
+            None,
+            vec![],
+            message,
+        ),
+    );
     if let Some(parent) = context.paths.events_file.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -2219,6 +3006,18 @@ fn emit_event(
             context.paths.events_file.display()
         )
     })
+}
+
+fn delivery_progress_stage(event_type: &str) -> (ProgressStage, Option<&'static str>) {
+    match event_type {
+        "delivery_started" | "delivery_poll_started" | "delivery_phase_started" => {
+            (ProgressStage::Start, Some("running"))
+        }
+        "delivery_cancelled" => (ProgressStage::Done, Some("cancelled")),
+        "delivery_completed" | "delivery_target_completed" => (ProgressStage::Done, Some("ok")),
+        "delivery_max_polls_reached" => (ProgressStage::Done, Some("blocked")),
+        _ => (ProgressStage::Heartbeat, None),
+    }
 }
 
 fn render_delivery_progress_event(event_type: &str, payload: &Value) -> String {
@@ -2465,6 +3264,8 @@ fn summarize_delivery_state(state: &DeliveryState) -> DeliveryCounts {
             "delivered" => counts.delivered += 1,
             "review_ready" => counts.review_ready += 1,
             "ci_passed" => counts.ci_passed += 1,
+            "blocked" => counts.blocked += 1,
+            "no_op" => counts.no_op += 1,
             "running" => counts.running += 1,
             "retry_wait" => counts.retry_wait += 1,
             "failed" => counts.failed += 1,
@@ -2606,5 +3407,119 @@ mod tests {
             infer_content_type("archive.bin"),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn delivery_harness_marks_unchanged_workspace_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("README.md"), "hello\n").unwrap();
+        let baseline = capture_workspace_snapshot(dir.path());
+        let issue = LinearIssue {
+            id: "issue-id".to_string(),
+            identifier: "ENG-1".to_string(),
+            title: "No-op".to_string(),
+            ..LinearIssue::default()
+        };
+        let issue_state = IssueDeliveryState {
+            issue_id: issue.id.clone(),
+            identifier: issue.identifier.clone(),
+            title: issue.title.clone(),
+            workspace: Some(dir.path().display().to_string()),
+            ..IssueDeliveryState::default()
+        };
+
+        let harness =
+            evaluate_delivery_harness(dir.path(), &baseline, &issue, &issue_state, &[], None);
+
+        assert!(!harness.repo_changed);
+        assert!(harness.no_op_detail.is_some());
+        assert!(harness.blocked_detail.is_none());
+        assert!(harness
+            .gates
+            .iter()
+            .any(|gate| gate.name == "change-detection" && gate.status == "no_op"));
+    }
+
+    #[test]
+    fn secret_and_local_path_scan_blocks_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_path = ["/", "Users", "alice", "private"].join("/");
+        fs::write(
+            dir.path().join("notes.txt"),
+            format!("temporary output from {local_path}\n"),
+        )
+        .unwrap();
+
+        let gates = scan_workspace_for_sensitive_evidence(dir.path());
+
+        assert!(gates.iter().any(|gate| {
+            gate.name == "secret-local-path-scan"
+                && gate.status == "blocked"
+                && gate.detail.contains("local absolute path")
+        }));
+    }
+
+    #[test]
+    fn failed_completion_state_does_not_retry_blocked_or_no_op() {
+        let mut blocked_state = IssueDeliveryState {
+            attempts: 1,
+            status: "running".to_string(),
+            ..IssueDeliveryState::default()
+        };
+        let blocked = test_completion("blocked", "secret scan blocked delivery");
+
+        apply_failed_completion_state(&mut blocked_state, &blocked, 3, 1_000);
+
+        assert_eq!(blocked_state.status, "blocked");
+        assert!(blocked_state.next_retry_at.is_none());
+        assert!(blocked_state.completed_at.is_some());
+
+        let mut retry_state = IssueDeliveryState {
+            attempts: 1,
+            status: "running".to_string(),
+            ..IssueDeliveryState::default()
+        };
+        let retry = test_completion("retry_wait", "GitHub checks are pending");
+
+        apply_failed_completion_state(&mut retry_state, &retry, 3, 1_000);
+
+        assert_eq!(retry_state.status, "retry_wait");
+        assert!(retry_state.next_retry_at.is_some());
+    }
+
+    #[test]
+    fn github_check_failures_are_reported_as_blocked() {
+        let result = CommandResult {
+            command: "gh".to_string(),
+            args: vec!["pr".to_string(), "checks".to_string()],
+            code: Some(1),
+            stdout: r#"[{"name":"test","bucket":"fail"}]"#.to_string(),
+            stderr: String::new(),
+            timed_out: false,
+            cancelled: false,
+            error: None,
+            timeout_ms: 1_000,
+            duration_ms: 7,
+        };
+
+        let completion =
+            interpret_github_checks(&result, "https://github.com/acme/repo/pull/5", "ci-success");
+
+        assert!(!completion.success);
+        assert_eq!(completion.status, "blocked");
+        assert!(completion.detail.contains("test"));
+        assert!(completion.gates.iter().any(|gate| gate.name == "github-ci"));
+    }
+
+    fn test_completion(status: &str, detail: &str) -> CompletionResult {
+        CompletionResult {
+            success: false,
+            status: status.to_string(),
+            gate: "delivered".to_string(),
+            detail: detail.to_string(),
+            pr_url: None,
+            gates: vec![],
+            repo_changed: false,
+        }
     }
 }
