@@ -2913,7 +2913,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_legacy_npm_linear_flags_in_rust() {
+    fn parses_historical_linear_flags_in_rust() {
         let args = CliArgs::try_parse_from([
             "amon-hen",
             "--banner",

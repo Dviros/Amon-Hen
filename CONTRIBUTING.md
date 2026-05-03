@@ -1,6 +1,6 @@
 # Contributing
 
-The product runtime is the native Rust crate under `crates/council/`. It ships the `council` binary for compatibility.
+The product runtime is the native Rust crate under `crates/amon-hen/`. It ships the `amon-hen` binary.
 
 ## Setup
 
@@ -21,7 +21,7 @@ cargo test --workspace
 
 ## Releases
 
-The published CLI artifact is the Rust crate in `crates/council/`.
+The published CLI artifact is the Rust crate in `crates/amon-hen/`.
 
 - Versioning, changelog updates, Git tags, and GitHub releases are managed by `release-please`.
 - The release workflow is defined in [release-please.yml](./.github/workflows/release-please.yml).
