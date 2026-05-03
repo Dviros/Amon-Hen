@@ -981,12 +981,17 @@ fn adjust_linear(state: &mut StudioState, delta: isize) -> Result<(), String> {
 }
 
 fn draw(state: &StudioState) -> Result<(), String> {
-    let (width, height) = terminal::size().unwrap_or((140, 40));
-    let width = width.max(100) as usize;
-    let height = height.max(28) as usize;
+    let (width, height) = terminal::size().unwrap_or((100, 28));
+    let width = usize::from(width).saturating_sub(1).max(1);
+    let height = usize::from(height).max(1);
     let mut out = io::stderr();
     execute!(out, MoveTo(0, 0), Clear(ClearType::All))
         .map_err(|error| format!("Failed to draw Studio: {error}"))?;
+
+    if width < 64 || height < 18 {
+        write_compact(&mut out, state, width, height)?;
+        return out.flush().map_err(|error| error.to_string());
+    }
 
     let header = format!(
         "Amon Hen Studio | members {} | lead {} | planner {} | handoff {} | {}x",
@@ -1000,44 +1005,113 @@ fn draw(state: &StudioState) -> Result<(), String> {
         },
         state.resolved.raw.iterations
     );
-    writeln!(out, "{header}").map_err(|error| error.to_string())?;
-    writeln!(out, "{}", state.status).map_err(|error| error.to_string())?;
+    write_clipped_line(&mut out, width, &header)?;
+    write_clipped_line(&mut out, width, &state.status)?;
     writeln!(out).map_err(|error| error.to_string())?;
 
-    let col_width = (width - 4) / 3;
-    let top_height = (height.saturating_sub(9)) / 2;
-    let bottom_height = height.saturating_sub(top_height + 8).max(8);
+    let prompt_height = if state.input_mode.is_some() { 4 } else { 3 };
+    let pane_height = height.saturating_sub(3 + prompt_height);
+    let top_height = (pane_height / 2).max(4);
+    let bottom_height = pane_height.saturating_sub(top_height).max(4);
     let panes = state.pane_order.clone();
     let top = panes.iter().take(3).copied().collect::<Vec<_>>();
     let bottom = panes.iter().skip(3).take(3).copied().collect::<Vec<_>>();
-    write_row(&mut out, state, &top, col_width, top_height)?;
-    write_row(&mut out, state, &bottom, col_width, bottom_height)?;
+    write_row(&mut out, state, &top, width, top_height)?;
+    write_row(&mut out, state, &bottom, width, bottom_height)?;
     write_prompt(&mut out, state, width)?;
     if state.show_help {
-        write_help(&mut out)?;
+        write_help(&mut out, width)?;
     }
     out.flush().map_err(|error| error.to_string())
+}
+
+fn write_compact(
+    out: &mut impl Write,
+    state: &StudioState,
+    width: usize,
+    height: usize,
+) -> Result<(), String> {
+    let lines = [
+        "Amon Hen Studio",
+        "Terminal too small for pane layout.",
+        "Resize wider/taller, or run without --studio for plain output.",
+        "",
+        "Keys: Ctrl+C twice quits.",
+        &format!("Status: {}", state.status),
+        &format!("Members: {}", state.resolved.members.join(",")),
+        &format!("Prompt: {}", state.prompt.trim()),
+    ];
+    for line in lines.iter().take(height) {
+        write_clipped_line(out, width, line)?;
+    }
+    Ok(())
 }
 
 fn write_row(
     out: &mut impl Write,
     state: &StudioState,
     panes: &[Pane],
-    width: usize,
+    row_width: usize,
     height: usize,
 ) -> Result<(), String> {
+    let pane_count = panes.len().max(1);
+    let gap_width = pane_count.saturating_sub(1);
+    let width = row_width.saturating_sub(gap_width) / pane_count;
     let rendered = panes
         .iter()
         .map(|pane| render_pane(state, *pane, width, height))
         .collect::<Vec<_>>();
     for line in 0..height {
-        for pane in &rendered {
-            write!(out, "{} ", pane.get(line).cloned().unwrap_or_default())
-                .map_err(|error| error.to_string())?;
+        let mut row = String::new();
+        for (index, pane) in rendered.iter().enumerate() {
+            if index > 0 {
+                row.push(' ');
+            }
+            row.push_str(&fit_line(
+                pane.get(line).map(String::as_str).unwrap_or_default(),
+                width,
+            ));
         }
-        writeln!(out).map_err(|error| error.to_string())?;
+        write_clipped_line(out, row_width, &row)?;
     }
     Ok(())
+}
+
+fn write_clipped_line(out: &mut impl Write, width: usize, line: &str) -> Result<(), String> {
+    writeln!(out, "{}", studio_clip(line, width)).map_err(|error| error.to_string())
+}
+
+fn fit_line(line: &str, width: usize) -> String {
+    let clipped = studio_clip(line, width);
+    format!("{clipped:<width$}")
+}
+
+fn studio_clip(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let cleaned = text
+        .chars()
+        .map(|ch| {
+            if ch == '\n' || ch == '\r' || ch == '\t' || ch.is_control() {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    if cleaned.chars().count() <= max_chars {
+        return cleaned;
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let mut clipped = cleaned
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    clipped.push_str("...");
+    clipped
 }
 
 fn render_pane(state: &StudioState, pane: Pane, width: usize, height: usize) -> Vec<String> {
@@ -1143,7 +1217,7 @@ fn agent_lines(state: &StudioState) -> Vec<String> {
                     format!(
                         " tokens:{} cmd:{}",
                         candidate.token_usage.total,
-                        truncate(&candidate.command, 42).replace('\n', " ")
+                        studio_clip(&candidate.command, 42)
                     )
                 })
         });
@@ -1231,7 +1305,7 @@ fn capability_lines(state: &StudioState) -> Vec<String> {
                     .raw
                     .claude_agents_json
                     .as_deref()
-                    .map(|value| truncate(value, 32))
+                    .map(|value| studio_clip(value, 32))
                     .unwrap_or_else(|| "none".to_string())
             ),
             format!(
@@ -1361,7 +1435,7 @@ fn result_lines(state: &StudioState) -> Vec<String> {
         lines.push(format!(
             "cmd [{}] {}",
             command.status,
-            truncate(&command.command, 54)
+            studio_clip(&command.command, 54)
         ));
     }
     for member in &result.members {
@@ -1395,11 +1469,21 @@ fn result_lines(state: &StudioState) -> Vec<String> {
 }
 
 fn boxed_lines(title: &str, lines: &[String], width: usize, height: usize) -> Vec<String> {
-    let inner = width.saturating_sub(4).max(10);
+    if height == 0 {
+        return Vec::new();
+    }
+    if width < 5 {
+        return (0..height).map(|_| fit_line(title, width)).collect();
+    }
+    let inner = width - 4;
+    let title_inner = width - 5;
     let mut out = Vec::new();
-    out.push(format!("+-- {:<inner$}+", truncate(title, inner)));
+    out.push(format!(
+        "+-- {:<title_inner$}+",
+        studio_clip(title, title_inner)
+    ));
     for line in lines.iter().take(height.saturating_sub(2)) {
-        out.push(format!("| {:<inner$} |", truncate(line, inner)));
+        out.push(format!("| {:<inner$} |", studio_clip(line, inner)));
     }
     while out.len() < height.saturating_sub(1) {
         out.push(format!("| {:<inner$} |", ""));
@@ -1419,23 +1503,24 @@ fn write_prompt(out: &mut impl Write, state: &StudioState, width: usize) -> Resu
         state.resolved.raw.files.len(),
         state.resolved.raw.commands.len()
     );
-    writeln!(out, "{}", "-".repeat(width)).map_err(|error| error.to_string())?;
-    writeln!(out, "Prompt | {context}").map_err(|error| error.to_string())?;
-    writeln!(out, "{}", truncate(prompt, width.saturating_sub(1)))
-        .map_err(|error| error.to_string())?;
+    write_clipped_line(out, width, &"-".repeat(width))?;
+    write_clipped_line(out, width, &format!("Prompt | {context}"))?;
+    write_clipped_line(out, width, prompt)?;
     if let Some(mode) = &state.input_mode {
-        writeln!(
+        write_clipped_line(
             out,
-            "Editing {:?}: {}_",
-            mode,
-            truncate(&state.input_buffer, width.saturating_sub(20))
-        )
-        .map_err(|error| error.to_string())?;
+            width,
+            &format!(
+                "Editing {:?}: {}_",
+                mode,
+                studio_clip(&state.input_buffer, width.saturating_sub(20))
+            ),
+        )?;
     }
     Ok(())
 }
 
-fn write_help(out: &mut impl Write) -> Result<(), String> {
+fn write_help(out: &mut impl Write, width: usize) -> Result<(), String> {
     let lines = [
         "",
         "Help: Tab focus | Up/Down select | Left/Right modify | Enter activate/edit",
@@ -1445,7 +1530,7 @@ fn write_help(out: &mut impl Write) -> Result<(), String> {
         "Capabilities manages inherit/override plus provider MCP, skills, tools, plugins, policies, and extension profiles.",
     ];
     for line in lines {
-        writeln!(out, "{line}").map_err(|error| error.to_string())?;
+        write_clipped_line(out, width, line)?;
     }
     Ok(())
 }
@@ -1590,5 +1675,118 @@ mod tests {
         let snapshot = render_noninteractive_studio_snapshot(&resolved);
         assert!(snapshot.contains("Native Studio is available"));
         assert!(snapshot.contains("members: codex,claude,gemini"));
+    }
+
+    #[test]
+    fn boxes_clip_to_fixed_width_without_embedded_newlines() {
+        let lines = boxed_lines(
+            "Capabilities with a very long title",
+            &[
+                "Claude agents JSON: {\"huge\":\"value\"}\n...[truncated]".to_string(),
+                "Gemini admin policy: a very long policy value that must not wrap".to_string(),
+            ],
+            24,
+            5,
+        );
+
+        assert_eq!(lines.len(), 5);
+        for line in lines {
+            assert!(!line.contains('\n'));
+            assert_eq!(line.chars().count(), 24, "{line}");
+        }
+    }
+
+    #[test]
+    fn pane_rows_never_exceed_terminal_width() {
+        let state = test_state(
+            "Inspect this repo and suggest the cleanest next patch with enough text to force clipping",
+        );
+        let mut output = Vec::new();
+        write_row(
+            &mut output,
+            &state,
+            &[Pane::Capabilities, Pane::Linear, Pane::Results],
+            79,
+            8,
+        )
+        .unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+
+        for line in rendered.lines() {
+            assert!(
+                line.chars().count() <= 79,
+                "line exceeded terminal width: {line}"
+            );
+            assert!(!line.contains("...[truncated]"));
+        }
+    }
+
+    #[test]
+    fn prompt_rendering_never_exceeds_terminal_width() {
+        let state = test_state("A prompt that is intentionally far longer than a narrow terminal width so the Studio prompt renderer must clip it without relying on terminal wrapping");
+        let mut output = Vec::new();
+        write_prompt(&mut output, &state, 63).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+
+        for line in rendered.lines() {
+            assert!(
+                line.chars().count() <= 63,
+                "prompt line exceeded terminal width: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_c_requires_second_press_to_quit() {
+        let mut state = test_state("hello");
+        let ctrl_c = || Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+        let first = handle_event(&mut state, ctrl_c()).unwrap();
+        assert!(matches!(first, StudioAction::None));
+        assert!(state.status.contains("again"));
+
+        let second = handle_event(&mut state, ctrl_c()).unwrap();
+        assert!(matches!(second, StudioAction::Quit));
+    }
+
+    fn test_state(prompt: &str) -> StudioState {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--studio",
+            "--members",
+            "codex,claude,gemini",
+            "--planner",
+            "codex",
+            "--lead",
+            "claude",
+            "--handoff",
+            "--iterations",
+            "2",
+            "--team-work",
+            "1",
+            prompt,
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        StudioState {
+            prompt: resolved.prompt.clone(),
+            resolved,
+            menu_index: 0,
+            focus: Pane::Capabilities,
+            pane_order: PANES.to_vec(),
+            setting_index: 0,
+            capability_index: 0,
+            linear_index: 0,
+            result_index: 0,
+            last_result: None,
+            last_linear_result: None,
+            last_auth_result: None,
+            last_capability_result: None,
+            status: "Ready".to_string(),
+            input_mode: None,
+            input_buffer: String::new(),
+            show_help: false,
+            exit_armed_until: None,
+        }
     }
 }
