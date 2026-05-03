@@ -142,7 +142,7 @@ Attach local files:
 council \
   --members codex,claude,gemini \
   --file crates/council/src/lib.rs \
-  --file web/src/pages/index.astro \
+  --file crates/council/src/linear_delivery.rs \
   "Review these files and propose the next patch"
 ```
 
@@ -152,7 +152,7 @@ Attach command output and show the commands as tool usage:
 council \
   --members codex,claude,gemini \
   --cmd "cargo test --workspace --locked" \
-  --cmd "npm --prefix web run build" \
+  --cmd "cargo clippy --workspace --locked -- -D warnings" \
   "Use this command output while deciding what to fix"
 ```
 

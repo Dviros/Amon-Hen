@@ -70,7 +70,7 @@ function logoPill(label, logoSrc, accent, logoStyle = {}) {
   };
 }
 
-function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
+function buildMarkup({ amonLogo, codexLogo, claudeLogo, geminiLogo }) {
   return {
     type: "div",
     props: {
@@ -79,8 +79,8 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
         position: "relative",
         width: "100%",
         height: "100%",
-        backgroundColor: "#f6f7f2",
-        color: "#10251f",
+        backgroundColor: "#f7f8fb",
+        color: "#10131a",
         padding: "54px 64px",
       },
       children: [
@@ -92,7 +92,7 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
               position: "absolute",
               inset: "0",
               backgroundImage:
-                "linear-gradient(90deg, rgba(16,37,31,0.08) 1px, transparent 1px), linear-gradient(180deg, rgba(16,37,31,0.08) 1px, transparent 1px)",
+                "linear-gradient(90deg, rgba(16,19,26,0.08) 1px, transparent 1px), linear-gradient(180deg, rgba(16,19,26,0.08) 1px, transparent 1px)",
               backgroundSize: "48px 48px",
             },
           },
@@ -107,11 +107,11 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
               justifyContent: "space-between",
               width: "100%",
               height: "100%",
-              border: "2px solid #10251f",
+              border: "2px solid rgba(16,19,26,0.82)",
               borderRadius: "8px",
               backgroundColor: "#ffffff",
               padding: "34px 38px",
-              boxShadow: "14px 14px 0 #d8b45f",
+              boxShadow: "14px 14px 0 #11a9a7",
             },
             children: [
               {
@@ -133,21 +133,17 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
                         },
                         children: [
                           {
-                            type: "div",
+                            type: "img",
                             props: {
+                              src: amonLogo,
+                              width: 54,
+                              height: 54,
                               style: {
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
                                 width: "54px",
                                 height: "54px",
                                 borderRadius: "8px",
-                                backgroundColor: "#10251f",
-                                color: "#d8b45f",
-                                fontSize: "24px",
-                                fontWeight: 700,
+                                objectFit: "contain",
                               },
-                              children: "AH",
                             },
                           },
                           {
@@ -170,7 +166,7 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
                       props: {
                         style: {
                           display: "flex",
-                          color: "#587067",
+                          color: "#606a78",
                           fontSize: "23px",
                           fontWeight: 600,
                           lineHeight: 1,
@@ -210,7 +206,7 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
                         style: {
                           display: "flex",
                           maxWidth: "930px",
-                          color: "#30453e",
+                          color: "#606a78",
                           fontSize: "28px",
                           fontWeight: 500,
                           lineHeight: 1.34,
@@ -238,9 +234,9 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
                           gap: "14px",
                         },
                         children: [
-                          logoPill("Codex", codexLogo, "#2f7d69", { borderRadius: "6px" }),
-                          logoPill("Claude", claudeLogo, "#b7472a"),
-                          logoPill("Gemini", geminiLogo, "#315fb5"),
+                          logoPill("Codex", codexLogo, "#11a9a7", { borderRadius: "6px" }),
+                          logoPill("Claude", claudeLogo, "#df5b49"),
+                          logoPill("Gemini", geminiLogo, "#3468e7"),
                         ],
                       },
                     },
@@ -253,12 +249,12 @@ function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
                           alignItems: "center",
                           padding: "0 20px",
                           borderRadius: "8px",
-                          backgroundColor: "#10251f",
-                          color: "#f6f7f2",
+                          backgroundColor: "#10131a",
+                          color: "#ffffff",
                           fontSize: "24px",
                           fontWeight: 700,
                         },
-                        children: "Rust-native delivery studio",
+                        children: "Rust-native AI delivery studio",
                       },
                     },
                   ],
@@ -278,13 +274,14 @@ async function main() {
     readFile(join(rootDir, "src", "assets", "fonts", "Inter-700.woff")),
   ]);
 
-  const [codexLogo, claudeLogo, geminiLogo] = await Promise.all([
+  const [amonLogo, codexLogo, claudeLogo, geminiLogo] = await Promise.all([
+    rasterizedSvgDataUrl(join(rootDir, "public", "amonhen.svg"), 64),
     pngDataUrl(join(rootDir, "src", "assets", "agent-logos", "codex.png")),
     pngDataUrl(join(rootDir, "src", "assets", "agent-logos", "claude.png")),
     rasterizedSvgDataUrl(join(rootDir, "public", "agent-logos", "gemini.svg"), 64),
   ]);
 
-  const svg = await satori(buildMarkup({ codexLogo, claudeLogo, geminiLogo }), {
+  const svg = await satori(buildMarkup({ amonLogo, codexLogo, claudeLogo, geminiLogo }), {
     width: 1200,
     height: 630,
     fonts: [

@@ -17,11 +17,16 @@ const pageUrl = `${siteUrl}/`;
 const metaImage = `${siteUrl}${ogImagePath}`;
 const repoUrl = "https://github.com/Dviros/Amon-Hen";
 const docsUrl = `${repoUrl}/blob/main/crates/council/README.md`;
-const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
+const actionsUrl = `${repoUrl}/actions`;
+const releasesUrl = `${repoUrl}/releases`;
+const securityUrl = `${repoUrl}/blob/main/SECURITY.md`;
+const linkedInUrl = "https://www.linkedin.com/in/dviros/";
 const crateName = "council";
 const crateVersion = "0.1.5";
 const crateUrl = `https://crates.io/crates/${crateName}`;
+const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
 const robotsContent = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
+
 const structuredData = JSON.stringify([
   {
     "@context": "https://schema.org",
@@ -33,7 +38,8 @@ const structuredData = JSON.stringify([
     publisher: {
       "@type": "Person",
       name: authorName,
-      url: "https://github.com/Dviros",
+      url: linkedInUrl,
+      sameAs: [repoUrl, linkedInUrl],
     },
   },
   {
@@ -58,39 +64,65 @@ const structuredData = JSON.stringify([
     author: {
       "@type": "Person",
       name: authorName,
-      url: "https://github.com/Dviros",
+      url: linkedInUrl,
+      sameAs: [repoUrl, linkedInUrl],
     },
     isAccessibleForFree: true,
-    keywords: "Codex, Claude, Gemini, Linear, AI agents, Rust CLI, terminal UI",
+    keywords: "Rust CLI, Codex, Claude, Gemini, Linear, AI agents, terminal UI, MCP",
     featureList: [
       "Native Rust orchestration for Codex, Claude, and Gemini",
-      "Interactive Studio with auth, provider capabilities, telemetry, prompt file tags, and command tools",
+      "Interactive Studio with roles, auth, provider capabilities, telemetry, files, and tools",
       "Provider-specific model, effort, sandbox, MCP, Skills, tools, and permission controls",
-      "Long-running Linear delivery loops with isolated workspaces, retries, reconciliation, media, and review or CI gates",
-      "Team-work fanout that lets each provider run same-provider sub-agents",
+      "Linear delivery loops with isolated workspaces, retries, reconciliation, media, and review or CI gates",
+      "Same-provider sub-agent fanout with lead synthesis",
     ],
-    sameAs: [repoUrl, crateUrl],
+    sameAs: [repoUrl, crateUrl, linkedInUrl],
   },
 ]);
 
+const navLinks = [
+  ["Studio", "#studio"],
+  ["Providers", "#providers"],
+  ["Linear", "#linear"],
+  ["Run", "#run"],
+];
+
 const providerRows = [
-  ["Codex", "/agent-logos/codex.png", "planner", "gpt-5.2", "high", "inherit MCP profile"],
-  ["Claude", "/agent-logos/claude.png", "lead", "sonnet", "max", "override tools"],
-  ["Gemini", "/agent-logos/gemini.svg", "executor", "gemini-pro", "high", "settings profile"],
+  {
+    name: "Codex",
+    logo: "/agent-logos/codex.png",
+    role: "planner",
+    meta: "model gpt-5.2, effort high, MCP profile repo",
+    accent: "cyan",
+  },
+  {
+    name: "Claude",
+    logo: "/agent-logos/claude.png",
+    role: "lead",
+    meta: "sonnet, max effort, allowed tools policy",
+    accent: "rose",
+  },
+  {
+    name: "Gemini",
+    logo: "/agent-logos/gemini.svg",
+    role: "executor",
+    meta: "gemini-pro, high effort, settings profile",
+    accent: "blue",
+  },
 ];
 
-const workflowCards = [
-  ["Studio first", "Move panes, change roles, tag files, onboard auth, inspect tools, and rerun without leaving the terminal."],
-  ["Provider-native", "Inherit each CLI's local config by default, then override MCP, Skills, tools, model, effort, or permissions when the task needs it."],
-  ["Linear loop", "Poll selected projects or epics, isolate each issue workspace, retry failures, reconcile state, and stop at review or passing CI."],
-  ["Observable agents", "See prompt commands, shell tools, token usage, sub-agent fanout, provider status, and final synthesis in one place."],
+const signalItems = [
+  ["Rust runtime", "Cargo workspace, native binary, scriptable stdout, observable stderr."],
+  ["Provider-native", "Keep each CLI's auth, MCP, Skills, tools, models, and permissions intact."],
+  ["Interactive Studio", "Selectable panes for roles, auth, files, tools, Linear, telemetry, and help."],
+  ["Delivery loop", "Poll Linear projects or epics until human review or GitHub CI success."],
 ];
 
-const linearSteps = [
-  ["Target", "Select Linear projects, epics, labels, teams, or explicit issue IDs."],
-  ["Plan", "Assign planner, lead, and executors with phase-specific provider prompts."],
-  ["Work", "Create isolated workspaces, run tools, attach media, and comment progress back to Linear."],
-  ["Gate", "Reconcile retries and finish only at human review or GitHub CI success."],
+const studioPanels = [
+  ["Settings", "Lead, planner, handoff, iterations, model and effort per provider."],
+  ["Capabilities", "Inherit local provider config or override MCP, Skills, tools, and agents."],
+  ["Telemetry", "Token usage, prompt commands, shell tools, sub-agent fanout, and retries."],
+  ["Linear", "Project and epic queues, issue workspaces, media attachments, comments, gates."],
 ];
 
 const capabilityFlags = [
@@ -102,6 +134,22 @@ const capabilityFlags = [
   "--gemini-settings",
   "--gemini-tools-profile",
 ];
+
+const linearSteps = [
+  ["Select", "Target projects, epics, teams, states, assignees, labels, or explicit issue IDs."],
+  ["Plan", "Use a dedicated planner and lead to break each issue into provider-specific phases."],
+  ["Build", "Create isolated workspaces, run tools, fan out sub-agents, test, and reconcile."],
+  ["Deliver", "Comment progress, attach media, open or update GitHub work, and wait for review or CI."],
+];
+
+const resourceLinks = [
+  ["GitHub", repoUrl, "Source, issues, releases, and Actions."],
+  ["CLI guide", docsUrl, "Install, Studio, provider controls, Linear, and telemetry examples."],
+  ["crates.io", crateUrl, "Rust package metadata for the compatibility binary."],
+  ["Actions", actionsUrl, "CI runs for the Rust workspace and site."],
+  ["Security", securityUrl, "Private vulnerability reporting and supported versions."],
+  ["LinkedIn", linkedInUrl, "Dviros on LinkedIn."],
+];
 ---
 
 <!DOCTYPE html>
@@ -111,7 +159,7 @@ const capabilityFlags = [
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/amonhen.svg" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="theme-color" content="#10251f" />
+    <meta name="theme-color" content="#f6f7fb" />
     <meta name="application-name" content={siteName} />
     <meta name="apple-mobile-web-app-title" content={siteName} />
     <meta name="author" content={authorName} />
@@ -145,34 +193,50 @@ const capabilityFlags = [
     <Font cssVariable="--font-inter" preload />
     <Font cssVariable="--font-geist-mono" preload />
     <script type="application/ld+json" set:html={structuredData}></script>
-    <script is:inline>
-      if (window.matchMedia("(prefers-reduced-motion: no-preference)").matches) {
-        document.documentElement.classList.add("motion-pending");
-        window.requestAnimationFrame(() => {
-          window.requestAnimationFrame(() => {
-            document.documentElement.classList.remove("motion-pending");
-            document.documentElement.classList.add("motion-ready");
-          });
-        });
-      }
-    </script>
     <style is:global>
-      html {
-        scroll-behavior: smooth;
-        background: #f6f7f2;
-      }
-
-      body {
-        margin: 0;
-        min-width: 320px;
-        background: #f6f7f2;
-        color: #10251f;
-        font-family: var(--font-inter), system-ui, sans-serif;
-        text-rendering: geometricPrecision;
+      :root {
+        --paper: #f7f8fb;
+        --surface: #ffffff;
+        --ink: #10131a;
+        --muted: #606a78;
+        --line: rgba(16, 19, 26, 0.12);
+        --line-strong: rgba(16, 19, 26, 0.2);
+        --cyan: #11a9a7;
+        --blue: #3468e7;
+        --amber: #d6972b;
+        --rose: #df5b49;
+        --violet: #7a5af8;
+        --green: #15a46d;
+        --dark: #121722;
+        --dark-2: #1a2130;
+        --radius: 8px;
+        --shadow: 0 24px 70px rgba(16, 19, 26, 0.14);
+        --mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --sans: var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif;
       }
 
       * {
         box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        background: var(--paper);
+      }
+
+      body {
+        min-width: 320px;
+        margin: 0;
+        background:
+          linear-gradient(90deg, rgba(16, 19, 26, 0.045) 1px, transparent 1px),
+          linear-gradient(180deg, rgba(16, 19, 26, 0.04) 1px, transparent 1px),
+          linear-gradient(180deg, #fbfbfd 0%, #f2f5fb 42%, #ffffff 100%);
+        background-size: 48px 48px, 48px 48px, auto;
+        color: var(--ink);
+        font-family: var(--sans);
+        letter-spacing: 0;
+        overflow-x: hidden;
+        text-rendering: geometricPrecision;
       }
 
       a {
@@ -180,126 +244,9 @@ const capabilityFlags = [
         text-decoration: none;
       }
 
-      .page-shell {
-        min-height: 100vh;
-        overflow: hidden;
-      }
-
-      .nav {
-        position: sticky;
-        top: 0;
-        z-index: 20;
-        border-bottom: 1px solid rgba(16, 37, 31, 0.16);
-        background: rgba(246, 247, 242, 0.92);
-        backdrop-filter: blur(14px);
-      }
-
-      .nav-inner {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        max-width: 1180px;
-        height: 68px;
-        margin: 0 auto;
-        padding: 0 24px;
-      }
-
-      .brand {
-        display: inline-flex;
-        align-items: center;
-        gap: 12px;
-        font-weight: 800;
-        line-height: 1;
-      }
-
-      .brand-mark {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 36px;
-        height: 36px;
-        border-radius: 8px;
-        background: #10251f;
-        color: #d8b45f;
-        font-size: 0.82rem;
-        font-weight: 800;
-      }
-
-      .nav-links {
-        display: flex;
-        align-items: center;
-        gap: 22px;
-        color: #30453e;
-        font-size: 0.95rem;
-        font-weight: 650;
-      }
-
-      .nav-links a {
-        border-bottom: 2px solid transparent;
-      }
-
-      .nav-links a:hover {
-        border-bottom-color: #d8b45f;
-      }
-
-      .section {
-        max-width: 1180px;
-        margin: 0 auto;
-        padding: 96px 24px;
-      }
-
-      .hero {
-        position: relative;
-        border-bottom: 1px solid rgba(16, 37, 31, 0.14);
-      }
-
-      .hero::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background-image:
-          linear-gradient(90deg, rgba(16, 37, 31, 0.07) 1px, transparent 1px),
-          linear-gradient(180deg, rgba(16, 37, 31, 0.07) 1px, transparent 1px);
-        background-size: 56px 56px;
-        mask-image: linear-gradient(180deg, #000 0%, transparent 82%);
-        pointer-events: none;
-      }
-
-      .hero-grid {
-        position: relative;
-        display: grid;
-        grid-template-columns: minmax(0, 0.92fr) minmax(460px, 1.08fr);
-        align-items: center;
-        gap: 54px;
-        min-height: calc(100vh - 68px);
-        max-width: 1180px;
-        margin: 0 auto;
-        padding: 68px 24px 78px;
-      }
-
-      .eyebrow {
-        display: inline-flex;
-        width: fit-content;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 26px;
-        padding: 8px 12px;
-        border: 1px solid rgba(16, 37, 31, 0.22);
-        border-radius: 8px;
-        background: #ffffff;
-        color: #30453e;
-        font-size: 0.82rem;
-        font-weight: 800;
-        text-transform: uppercase;
-      }
-
-      .eyebrow::before {
-        content: "";
-        width: 10px;
-        height: 10px;
-        border-radius: 3px;
-        background: #2f7d69;
-        box-shadow: 16px 0 0 #b7472a, 32px 0 0 #315fb5;
+      img,
+      svg {
+        display: block;
       }
 
       h1,
@@ -309,67 +256,249 @@ const capabilityFlags = [
         margin: 0;
       }
 
+      .site-shell {
+        min-height: 100vh;
+        overflow: hidden;
+      }
+
+      .hero-inner > *,
+      .section > *,
+      .topbar-inner > * {
+        min-width: 0;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.84);
+        backdrop-filter: blur(18px);
+      }
+
+      .topbar-inner {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 24px;
+        max-width: 1220px;
+        width: 100%;
+        min-height: 72px;
+        margin: 0 auto;
+        padding: 0 26px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        width: fit-content;
+        font-weight: 850;
+      }
+
+      .brand img {
+        width: 38px;
+        height: 38px;
+        border-radius: 8px;
+        box-shadow: 0 10px 28px rgba(17, 169, 167, 0.24);
+      }
+
+      .brand span {
+        font-size: 1rem;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 5px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .nav-links a,
+      .icon-link {
+        transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease;
+      }
+
+      .nav-links a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
+        padding: 0 12px;
+        border-radius: 6px;
+        color: #2b3340;
+        font-size: 0.9rem;
+        font-weight: 760;
+      }
+
+      .nav-links a:hover {
+        background: #111827;
+        color: #ffffff;
+      }
+
+      .social-links {
+        display: flex;
+        justify-content: flex-end;
+        justify-self: end;
+        gap: 10px;
+      }
+
+      .icon-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: #ffffff;
+        color: var(--ink);
+      }
+
+      .icon-link:hover {
+        transform: translateY(-2px);
+        border-color: var(--ink);
+        background: var(--ink);
+        color: #ffffff;
+      }
+
+      .icon-link svg {
+        width: 19px;
+        height: 19px;
+        fill: currentColor;
+      }
+
+      .hero {
+        position: relative;
+      }
+
+      .hero-inner {
+        display: grid;
+        grid-template-columns: minmax(0, 0.95fr) minmax(480px, 1.05fr);
+        align-items: center;
+        gap: 58px;
+        max-width: 1220px;
+        min-height: calc(100vh - 72px);
+        margin: 0 auto;
+        padding: 76px 26px 72px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        width: fit-content;
+        min-height: 34px;
+        padding: 0 12px;
+        border: 1px solid rgba(17, 169, 167, 0.26);
+        border-radius: var(--radius);
+        background: #eafdfb;
+        color: #076b70;
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        font-weight: 760;
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        background: var(--cyan);
+        box-shadow: 15px 0 0 var(--rose), 30px 0 0 var(--blue);
+      }
+
       h1 {
         max-width: 780px;
-        color: #10251f;
-        font-size: 4.7rem;
+        margin-top: 24px;
+        font-size: 5rem;
         font-weight: 850;
-        line-height: 0.98;
+        line-height: 0.96;
         letter-spacing: 0;
       }
 
       .hero-copy {
+        max-width: 720px;
         margin-top: 26px;
-        max-width: 690px;
-        color: #30453e;
-        font-size: 1.22rem;
+        color: var(--muted);
+        font-size: 1.16rem;
         font-weight: 520;
-        line-height: 1.68;
+        line-height: 1.7;
       }
 
-      .hero-actions {
+      .hero-actions,
+      .provider-strip,
+      .link-row {
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
-        margin-top: 34px;
+      }
+
+      .hero-actions {
+        margin-top: 32px;
       }
 
       .button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        gap: 9px;
         min-height: 46px;
         padding: 0 18px;
-        border: 2px solid #10251f;
-        border-radius: 8px;
-        font-size: 0.96rem;
-        font-weight: 800;
-        line-height: 1;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: #ffffff;
+        color: var(--ink);
+        font-size: 0.94rem;
+        font-weight: 820;
+        transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
       }
 
       .button.primary {
-        background: #10251f;
-        color: #f6f7f2;
-      }
-
-      .button.secondary {
-        background: #ffffff;
-        color: #10251f;
+        border-color: var(--ink);
+        background: var(--ink);
+        color: #ffffff;
       }
 
       .button:hover {
-        transform: translateY(-1px);
-        box-shadow: 5px 5px 0 #d8b45f;
+        transform: translateY(-2px);
+        box-shadow: 8px 8px 0 rgba(17, 169, 167, 0.2);
       }
 
-      .command {
+      .provider-strip {
         margin-top: 34px;
-        max-width: 720px;
-        border: 2px solid #10251f;
-        border-radius: 8px;
-        background: #101312;
-        color: #e8ede4;
-        box-shadow: 10px 10px 0 #2f7d69;
+      }
+
+      .provider-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 42px;
+        padding: 0 13px 0 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.82);
+        color: #2d3746;
+        font-size: 0.9rem;
+        font-weight: 760;
+      }
+
+      .provider-chip img {
+        width: 24px;
+        height: 24px;
+        object-fit: contain;
+      }
+
+      .command-card {
+        margin-top: 28px;
+        border: 1px solid #232b3a;
+        border-radius: var(--radius);
+        background: #0d1117;
+        color: #e6edf3;
+        box-shadow: 0 18px 48px rgba(16, 19, 26, 0.24);
         overflow: hidden;
       }
 
@@ -377,345 +506,402 @@ const capabilityFlags = [
         display: flex;
         align-items: center;
         justify-content: space-between;
-        border-bottom: 1px solid rgba(246, 247, 242, 0.18);
-        padding: 10px 14px;
-        color: #a7b5ae;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.82rem;
+        gap: 16px;
+        min-height: 42px;
+        padding: 0 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        color: #94a3b8;
+        font-family: var(--mono);
+        font-size: 0.78rem;
       }
 
-      .command pre {
+      pre {
         margin: 0;
+      }
+
+      code {
+        font-family: var(--mono);
+      }
+
+      .command-card pre,
+      .run-console pre {
         overflow-x: auto;
         padding: 18px;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.92rem;
-        line-height: 1.75;
+        font-size: 0.88rem;
+        line-height: 1.72;
         white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
 
-      .studio-frame {
-        border: 2px solid #10251f;
-        border-radius: 8px;
-        background: #ffffff;
-        box-shadow: 14px 14px 0 #d8b45f;
+      .orchestration-board {
+        position: relative;
+        min-width: 0;
+      }
+
+      .board-shell {
+        position: relative;
+        border: 1px solid rgba(16, 19, 26, 0.16);
+        border-radius: var(--radius);
+        background: #111827;
+        color: #f8fafc;
+        box-shadow: var(--shadow);
         overflow: hidden;
       }
 
-      .studio-topbar {
+      .board-shell::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+        background-size: 32px 32px;
+        pointer-events: none;
+      }
+
+      .board-top {
+        position: relative;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        border-bottom: 2px solid #10251f;
-        background: #10251f;
-        color: #f6f7f2;
-        padding: 12px 14px;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.82rem;
+        min-height: 52px;
+        padding: 0 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        color: #cbd5e1;
       }
 
-      .studio-status {
+      .run-state {
         display: inline-flex;
         align-items: center;
         gap: 8px;
+        color: #9ee6d8;
       }
 
-      .studio-status::before {
+      .run-state::before {
         content: "";
         width: 9px;
         height: 9px;
         border-radius: 999px;
-        background: #d8b45f;
+        background: var(--green);
       }
 
-      .studio-layout {
+      .board-body {
+        position: relative;
         display: grid;
-        grid-template-columns: 220px minmax(0, 1fr);
-        min-height: 560px;
-      }
-
-      .studio-menu {
-        border-right: 2px solid #10251f;
-        background: #f9faf4;
-        padding: 14px;
-      }
-
-      .menu-item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        min-height: 34px;
-        margin-bottom: 8px;
-        padding: 0 10px;
-        border-radius: 8px;
-        color: #30453e;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.86rem;
-        font-weight: 700;
-      }
-
-      .menu-item.active {
-        border: 1px solid #10251f;
-        background: #d8b45f;
-        color: #10251f;
-      }
-
-      .studio-main {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(190px, 0.62fr);
-        gap: 12px;
-        padding: 14px;
-        background: #ffffff;
-      }
-
-      .studio-pane {
-        border: 1px solid rgba(16, 37, 31, 0.28);
-        border-radius: 8px;
-        background: #fbfcf7;
-        overflow: hidden;
-      }
-
-      .studio-pane-title {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        border-bottom: 1px solid rgba(16, 37, 31, 0.18);
-        padding: 10px 12px;
-        color: #30453e;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.76rem;
-        font-weight: 800;
-        text-transform: uppercase;
-      }
-
-      .studio-pane-body {
-        padding: 12px;
-      }
-
-      .provider-row {
-        display: grid;
-        grid-template-columns: 90px 1fr;
-        gap: 10px;
-        align-items: start;
-        padding: 11px 0;
-        border-bottom: 1px solid rgba(16, 37, 31, 0.14);
-      }
-
-      .provider-row:last-child {
-        border-bottom: 0;
-      }
-
-      .provider-name {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        color: #10251f;
-        font-size: 0.9rem;
-        font-weight: 850;
-      }
-
-      .provider-name img {
-        width: 22px;
-        height: 22px;
-        object-fit: contain;
-      }
-
-      .provider-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-
-      .tag {
-        display: inline-flex;
-        align-items: center;
-        min-height: 24px;
-        padding: 0 8px;
-        border-radius: 6px;
-        background: #e7f1ea;
-        color: #244f43;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.72rem;
-        font-weight: 800;
-      }
-
-      .tag.red {
-        background: #f7e7df;
-        color: #7c331e;
-      }
-
-      .tag.blue {
-        background: #e6eefb;
-        color: #254b93;
-      }
-
-      .meter-row {
-        display: grid;
-        grid-template-columns: 84px 1fr 54px;
-        gap: 8px;
-        align-items: center;
-        margin-bottom: 12px;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.76rem;
-      }
-
-      .meter {
-        height: 8px;
-        border-radius: 999px;
-        background: #dfe5dc;
-        overflow: hidden;
-      }
-
-      .meter span {
-        display: block;
-        height: 100%;
-        border-radius: inherit;
-        background: #2f7d69;
-      }
-
-      .tool-log {
-        display: grid;
-        gap: 8px;
-        margin-top: 14px;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.76rem;
-      }
-
-      .tool-log div {
-        padding: 8px;
-        border-radius: 6px;
-        background: #101312;
-        color: #e8ede4;
-      }
-
-      .below-hero {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 12px;
-        padding-top: 0;
-      }
-
-      .signal {
-        min-height: 116px;
-        border: 1px solid rgba(16, 37, 31, 0.2);
-        border-radius: 8px;
-        background: #ffffff;
+        grid-template-columns: minmax(0, 1fr) 180px;
+        gap: 16px;
         padding: 18px;
       }
 
-      .signal strong {
+      .agent-lanes {
+        display: grid;
+        gap: 12px;
+      }
+
+      .agent-lane {
+        display: grid;
+        grid-template-columns: 42px 1fr auto;
+        gap: 12px;
+        align-items: center;
+        min-height: 86px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.06);
+        padding: 14px;
+      }
+
+      .agent-lane img {
+        width: 34px;
+        height: 34px;
+        border-radius: 7px;
+        object-fit: contain;
+      }
+
+      .agent-lane strong {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 0.96rem;
+      }
+
+      .agent-lane span {
+        display: block;
+        color: #b6c2d1;
+        font-size: 0.78rem;
+        line-height: 1.45;
+      }
+
+      .role-badge {
+        min-width: 82px;
+        padding: 7px 9px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #ffffff;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        text-align: center;
+      }
+
+      .accent-cyan {
+        border-left: 4px solid var(--cyan);
+      }
+
+      .accent-rose {
+        border-left: 4px solid var(--rose);
+      }
+
+      .accent-blue {
+        border-left: 4px solid var(--blue);
+      }
+
+      .telemetry-stack {
+        display: grid;
+        gap: 10px;
+        align-content: start;
+      }
+
+      .telemetry-box {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.06);
+        padding: 12px;
+      }
+
+      .telemetry-box small {
+        display: block;
+        color: #8fa3b8;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+      }
+
+      .telemetry-box strong {
+        display: block;
+        margin-top: 6px;
+        color: #ffffff;
+        font-size: 1.28rem;
+      }
+
+      .handoff-line {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        margin-top: 16px;
+        padding: 16px 18px 18px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .handoff-line span {
+        min-height: 36px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #dbeafe;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        line-height: 36px;
+        text-align: center;
+      }
+
+      .section {
+        max-width: 1220px;
+        margin: 0 auto;
+        padding: 96px 26px;
+      }
+
+      .signal-grid,
+      .studio-grid,
+      .provider-grid,
+      .linear-grid,
+      .resource-grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      .signal-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        padding-top: 0;
+      }
+
+      .signal,
+      .studio-panel,
+      .provider-card,
+      .resource-card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(255, 255, 255, 0.88);
+        box-shadow: 0 18px 44px rgba(16, 19, 26, 0.06);
+      }
+
+      .signal {
+        min-height: 146px;
+        padding: 20px;
+      }
+
+      .signal strong,
+      .studio-panel strong,
+      .provider-card strong,
+      .resource-card strong {
         display: block;
         margin-bottom: 8px;
-        color: #10251f;
         font-size: 1rem;
       }
 
-      .signal span {
-        color: #587067;
-        font-size: 0.92rem;
-        line-height: 1.5;
+      .signal span,
+      .studio-panel span,
+      .provider-card p,
+      .resource-card span {
+        color: var(--muted);
+        font-size: 0.94rem;
+        line-height: 1.58;
       }
 
       .section-kicker {
-        margin-bottom: 16px;
-        color: #2f7d69;
-        font-size: 0.82rem;
-        font-weight: 850;
-        text-transform: uppercase;
+        margin-bottom: 14px;
+        color: #076b70;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        font-weight: 760;
       }
 
       h2 {
-        max-width: 760px;
-        font-size: 3rem;
+        max-width: 780px;
+        font-size: 3.05rem;
         font-weight: 850;
-        line-height: 1.04;
+        line-height: 1.05;
         letter-spacing: 0;
       }
 
       .section-intro {
-        max-width: 760px;
+        max-width: 780px;
         margin-top: 18px;
-        color: #30453e;
-        font-size: 1.08rem;
-        line-height: 1.7;
+        color: var(--muted);
+        font-size: 1.06rem;
+        line-height: 1.72;
       }
 
-      .workflows {
+      .studio-section {
+        background: #10131a;
+        color: #ffffff;
+      }
+
+      .studio-section .section-kicker {
+        color: #7ee4dd;
+      }
+
+      .studio-section .section-intro {
+        color: #cbd5e1;
+      }
+
+      .studio-grid {
+        grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+        align-items: stretch;
+        margin-top: 40px;
+      }
+
+      .studio-menu-preview {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 14px;
-        margin-top: 36px;
+        gap: 10px;
+        align-content: start;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: var(--radius);
+        background: #171d29;
+        padding: 16px;
       }
 
-      .workflow {
-        min-height: 220px;
-        border: 2px solid #10251f;
-        border-radius: 8px;
-        background: #ffffff;
-        padding: 20px;
-        box-shadow: 6px 6px 0 #d8b45f;
-      }
-
-      .workflow h3 {
-        margin-bottom: 14px;
-        font-size: 1.1rem;
-        font-weight: 850;
-      }
-
-      .workflow p {
-        color: #30453e;
-        font-size: 0.96rem;
-        line-height: 1.62;
-      }
-
-      .capability-band {
-        background: #10251f;
-        color: #f6f7f2;
-      }
-
-      .capability-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 0.9fr) minmax(420px, 1.1fr);
-        gap: 42px;
+      .studio-menu-preview span {
+        display: flex;
         align-items: center;
+        justify-content: space-between;
+        min-height: 38px;
+        padding: 0 12px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.06);
+        color: #dbe4ee;
+        font-family: var(--mono);
+        font-size: 0.82rem;
       }
 
-      .capability-band .section-kicker {
-        color: #d8b45f;
+      .studio-menu-preview span:first-child {
+        background: #ffffff;
+        color: #111827;
       }
 
-      .capability-band .section-intro {
-        color: #c7d5ce;
+      .studio-panels {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .studio-panel {
+        min-height: 160px;
+        background: #ffffff;
+        color: var(--ink);
+        padding: 20px;
+      }
+
+      .provider-section {
+        background:
+          linear-gradient(180deg, #ffffff 0%, #f7f8fb 100%);
+      }
+
+      .provider-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 40px;
+      }
+
+      .provider-card {
+        min-height: 250px;
+        padding: 22px;
+      }
+
+      .provider-card img {
+        width: 46px;
+        height: 46px;
+        margin-bottom: 18px;
+        object-fit: contain;
+      }
+
+      .provider-card .tagline {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        margin: 18px 0 14px;
+        padding: 0 10px;
+        border-radius: 6px;
+        background: #eefbfb;
+        color: #076b70;
+        font-family: var(--mono);
+        font-size: 0.72rem;
       }
 
       .flag-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 10px;
+        margin-top: 28px;
       }
 
       .flag {
-        display: flex;
-        align-items: center;
-        min-height: 46px;
-        border: 1px solid rgba(246, 247, 242, 0.22);
-        border-radius: 8px;
-        background: rgba(246, 247, 242, 0.07);
-        padding: 0 12px;
-        color: #f6f7f2;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.84rem;
+        min-height: 44px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #ffffff;
+        color: #253041;
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        line-height: 44px;
+        text-align: center;
       }
 
-      .linear-board {
-        display: grid;
-        grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
-        gap: 24px;
-        margin-top: 42px;
-        align-items: stretch;
+      .linear-grid {
+        grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+        align-items: start;
+        margin-top: 40px;
       }
 
-      .linear-list {
+      .linear-steps {
         display: grid;
         gap: 12px;
       }
@@ -725,104 +911,82 @@ const capabilityFlags = [
         grid-template-columns: 44px 1fr;
         gap: 14px;
         align-items: start;
-        border: 1px solid rgba(16, 37, 31, 0.18);
-        border-radius: 8px;
+        min-height: 112px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
         background: #ffffff;
         padding: 16px;
       }
 
-      .step-index {
+      .step-number {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         width: 38px;
         height: 38px;
-        border-radius: 8px;
-        background: #2f7d69;
+        border-radius: var(--radius);
+        background: var(--blue);
         color: #ffffff;
         font-weight: 850;
       }
 
       .linear-step strong {
         display: block;
-        margin-bottom: 5px;
-      }
-
-      .linear-step p {
-        color: #587067;
-        font-size: 0.94rem;
-        line-height: 1.55;
-      }
-
-      .delivery-console {
-        border: 2px solid #10251f;
-        border-radius: 8px;
-        background: #101312;
-        color: #e8ede4;
-        overflow: hidden;
-      }
-
-      .delivery-console pre {
-        margin: 0;
-        overflow-x: auto;
-        padding: 20px;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.88rem;
-        line-height: 1.8;
-        white-space: pre-wrap;
-      }
-
-      .install {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.68fr);
-        gap: 28px;
-        align-items: start;
-      }
-
-      .install-panel {
-        border: 2px solid #10251f;
-        border-radius: 8px;
-        background: #ffffff;
-        overflow: hidden;
-      }
-
-      .install-panel pre {
-        margin: 0;
-        padding: 20px;
-        overflow-x: auto;
-        font-family: var(--font-geist-mono), ui-monospace, monospace;
-        font-size: 0.9rem;
-        line-height: 1.75;
-        white-space: pre-wrap;
-      }
-
-      .facts {
-        display: grid;
-        gap: 12px;
-      }
-
-      .fact {
-        border: 1px solid rgba(16, 37, 31, 0.18);
-        border-radius: 8px;
-        background: #ffffff;
-        padding: 16px;
-      }
-
-      .fact strong {
-        display: block;
         margin-bottom: 6px;
       }
 
-      .fact span {
-        color: #587067;
-        font-size: 0.93rem;
-        line-height: 1.5;
+      .linear-step p {
+        color: var(--muted);
+        font-size: 0.94rem;
+        line-height: 1.58;
+      }
+
+      .run-console {
+        border: 1px solid #232b3a;
+        border-radius: var(--radius);
+        background: #0d1117;
+        color: #e6edf3;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      .run-console-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 44px;
+        padding: 0 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        color: #94a3b8;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+      }
+
+      .run {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+        gap: 34px;
+        align-items: start;
+      }
+
+      .link-row {
+        margin-top: 28px;
+      }
+
+      .resource-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 36px;
+      }
+
+      .resource-card {
+        min-height: 132px;
+        padding: 18px;
       }
 
       .footer {
-        border-top: 1px solid rgba(16, 37, 31, 0.16);
-        padding: 34px 24px;
-        color: #587067;
+        border-top: 1px solid var(--line);
+        background: #ffffff;
+        padding: 30px 26px;
       }
 
       .footer-inner {
@@ -830,15 +994,20 @@ const capabilityFlags = [
         align-items: center;
         justify-content: space-between;
         gap: 18px;
-        max-width: 1180px;
+        max-width: 1220px;
         margin: 0 auto;
+        color: var(--muted);
         font-size: 0.92rem;
       }
 
       .footer-links {
         display: flex;
-        gap: 18px;
-        font-weight: 750;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .footer-links a {
+        font-weight: 760;
       }
 
       .stagger-fade,
@@ -846,64 +1015,130 @@ const capabilityFlags = [
         --stagger-fade-y: 12px;
       }
 
-      @media (max-width: 1020px) {
-        .hero-grid,
-        .capability-grid,
-        .linear-board,
-        .install {
+      @media (max-width: 1040px) {
+        .topbar-inner {
+          grid-template-columns: 1fr auto;
+        }
+
+        .nav-links {
+          grid-column: 1 / -1;
+          order: 3;
+          justify-content: flex-start;
+          overflow-x: auto;
+        }
+
+        .hero-inner,
+        .studio-grid,
+        .linear-grid,
+        .run {
           grid-template-columns: 1fr;
         }
 
-        .hero-grid {
+        .hero-inner {
           min-height: auto;
-          padding-top: 58px;
-        }
-
-        .studio-frame {
-          max-width: 720px;
-        }
-
-        .below-hero,
-        .workflows {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
         h1 {
-          font-size: 3.7rem;
+          font-size: 3.9rem;
         }
 
         h2 {
-          font-size: 2.55rem;
+          font-size: 2.5rem;
+        }
+
+        .signal-grid,
+        .provider-grid,
+        .resource-grid,
+        .flag-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
 
       @media (max-width: 720px) {
-        .nav-inner {
-          height: auto;
+        html,
+        body,
+        .site-shell,
+        .topbar,
+        .hero,
+        .studio-section,
+        .provider-section,
+        .footer {
+          width: 100%;
+          max-width: 100vw;
+          overflow-x: hidden;
+        }
+
+        .topbar-inner {
+          grid-template-columns: minmax(0, 1fr) auto;
+          gap: 10px;
           min-height: 64px;
-          align-items: flex-start;
-          flex-direction: column;
-          gap: 12px;
-          padding: 14px 18px;
+          padding: 12px 18px;
+          max-width: 100vw;
+          overflow: visible;
+        }
+
+        .brand span {
+          font-size: 0.96rem;
+        }
+
+        .social-links {
+          gap: 8px;
+        }
+
+        .icon-link {
+          width: 34px;
+          height: 34px;
+        }
+
+        .icon-link svg {
+          width: 17px;
+          height: 17px;
         }
 
         .nav-links {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
           width: 100%;
-          justify-content: space-between;
-          gap: 10px;
-          font-size: 0.85rem;
+          max-width: 100%;
+          overflow: visible;
         }
 
+        .nav-links a {
+          justify-content: center;
+          padding: 0 8px;
+          font-size: 0.82rem;
+        }
+
+        .hero-inner,
         .section {
-          padding: 70px 18px;
+          padding-left: 18px;
+          padding-right: 18px;
         }
 
-        .hero-grid {
-          padding: 42px 18px 58px;
+        .hero-inner {
+          display: flex;
+          align-items: stretch;
+          flex-direction: column;
+          width: min(100%, 100vw);
+          max-width: 100vw;
+          margin: 0;
+          padding-top: 48px;
+          padding-bottom: 58px;
+          gap: 34px;
+          overflow: hidden;
+        }
+
+        .hero-inner > *,
+        .section > *,
+        .stagger-fade-group,
+        .orchestration-board {
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
         }
 
         h1 {
-          font-size: 2.65rem;
+          font-size: 2.72rem;
           line-height: 1.02;
         }
 
@@ -913,27 +1148,62 @@ const capabilityFlags = [
 
         .hero-copy,
         .section-intro {
+          max-width: 100%;
           font-size: 1rem;
+          overflow-wrap: anywhere;
         }
 
-        .studio-layout,
-        .studio-main {
-          grid-template-columns: 1fr;
+        .provider-strip {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          width: 100%;
+          max-width: 100%;
         }
 
-        .studio-menu {
-          border-right: 0;
-          border-bottom: 2px solid #10251f;
+        .provider-chip {
+          justify-content: center;
+          width: 100%;
+          min-width: 0;
+          padding: 0 10px;
         }
 
-        .below-hero,
-        .workflows,
+        .command-title span:last-child {
+          display: none;
+        }
+
+        .board-shell,
+        .command-card,
+        .run-console {
+          width: 100%;
+          max-width: 100%;
+          min-width: 0;
+        }
+
+        .command-card pre,
+        .run-console pre {
+          max-width: 100%;
+        }
+
+        .board-body,
+        .studio-panels,
+        .signal-grid,
+        .provider-grid,
+        .resource-grid,
         .flag-grid {
           grid-template-columns: 1fr;
         }
 
-        .studio-layout {
-          min-height: auto;
+        .agent-lane {
+          grid-template-columns: 38px 1fr;
+        }
+
+        .role-badge {
+          grid-column: 2;
+          width: fit-content;
+        }
+
+        .handoff-line {
+          grid-template-columns: repeat(2, 1fr);
         }
 
         .footer-inner {
@@ -941,150 +1211,182 @@ const capabilityFlags = [
           flex-direction: column;
         }
       }
+
+      @media (max-width: 430px) {
+        .provider-strip {
+          grid-template-columns: 1fr;
+        }
+
+        .hero-actions .button {
+          width: 100%;
+        }
+      }
     </style>
   </head>
   <body>
-    <div class="page-shell">
-      <header class="nav">
-        <div class="nav-inner">
+    <div class="site-shell">
+      <header class="topbar">
+        <div class="topbar-inner">
           <a class="brand" href={pageUrl} aria-label="Amon Hen home">
-            <span class="brand-mark">AH</span>
+            <img src="/amonhen.svg" alt="Amon Hen mark" />
             <span>{siteName}</span>
           </a>
           <nav class="nav-links" aria-label="Primary navigation">
-            <a href="#studio">Studio</a>
-            <a href="#capabilities">Capabilities</a>
-            <a href="#linear">Linear</a>
-            <a href="#run">Run</a>
+            {navLinks.map(([label, href]) => <a href={href}>{label}</a>)}
           </nav>
+          <div class="social-links" aria-label="Project links">
+            <a class="icon-link" href={repoUrl} target="_blank" rel="noreferrer" aria-label="Amon Hen on GitHub">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 .7a11.3 11.3 0 0 0-3.6 22c.56.1.76-.24.76-.54v-2c-3.1.68-3.76-1.32-3.76-1.32-.5-1.3-1.24-1.66-1.24-1.66-1.02-.7.08-.68.08-.68 1.12.08 1.72 1.16 1.72 1.16 1 1.7 2.62 1.2 3.26.92.1-.72.4-1.2.72-1.48-2.48-.28-5.08-1.24-5.08-5.52 0-1.22.44-2.22 1.16-3-.12-.28-.5-1.42.1-2.96 0 0 .94-.3 3.1 1.14a10.7 10.7 0 0 1 5.64 0c2.14-1.44 3.08-1.14 3.08-1.14.62 1.54.24 2.68.12 2.96.72.78 1.16 1.78 1.16 3 0 4.3-2.6 5.24-5.08 5.52.4.34.76 1.02.76 2.06v3.02c0 .3.2.64.78.54A11.3 11.3 0 0 0 12 .7Z" />
+              </svg>
+            </a>
+            <a class="icon-link" href={linkedInUrl} target="_blank" rel="noreferrer" aria-label="Dviros on LinkedIn">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20.45 20.45h-3.56v-5.58c0-1.33-.03-3.04-1.86-3.04-1.86 0-2.14 1.45-2.14 2.95v5.67H9.33V9h3.42v1.56h.05c.48-.9 1.64-1.86 3.37-1.86 3.6 0 4.27 2.37 4.27 5.46v6.29ZM5.32 7.43a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12ZM7.1 20.45H3.53V9H7.1v11.45ZM22.22 0H1.77C.8 0 0 .77 0 1.73v20.54C0 23.23.8 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z" />
+              </svg>
+            </a>
+          </div>
         </div>
       </header>
 
       <main>
         <section class="hero">
-          <div class="hero-grid">
+          <div class="hero-inner">
             <div class="stagger-fade-group">
-              <div class="eyebrow">Rust-native agent command center</div>
+              <div class="eyebrow">Rust-native AI delivery studio</div>
               <h1>{siteName}</h1>
               <p class="hero-copy">
-                Amon Hen coordinates Codex, Claude, Gemini, and Linear from one native terminal. Pick a planner, appoint a lead, hand work between providers, fan out real same-provider sub-agents, and keep the loop running until review or passing CI.
+                Coordinate Codex, Claude, Gemini, and Linear from one native terminal. Pick the planner, appoint the lead, hand work across providers, fan out same-provider sub-agents, and keep the loop moving until review or green CI.
               </p>
               <div class="hero-actions">
                 <a class="button primary" href="#run">Run the Studio</a>
-                <a class="button secondary" href={docsUrl} target="_blank" rel="noreferrer">Read CLI docs</a>
+                <a class="button" href={repoUrl} target="_blank" rel="noreferrer">View GitHub</a>
+                <a class="button" href={linkedInUrl} target="_blank" rel="noreferrer">Dviros on LinkedIn</a>
               </div>
-              <div class="command" aria-label="Example command">
+              <div class="provider-strip" aria-label="Supported providers">
+                {providerRows.map((provider) => (
+                  <span class="provider-chip">
+                    <img src={provider.logo} alt={`${provider.name} logo`} />
+                    {provider.name}
+                  </span>
+                ))}
+                <span class="provider-chip">Linear</span>
+                <span class="provider-chip">GitHub CI</span>
+              </div>
+              <div class="command-card" aria-label="Studio command">
                 <div class="command-title">
                   <span>terminal</span>
                   <span>{examplePrompt}</span>
                 </div>
-                <pre><code>cargo run -p council -- --studio --members codex,claude,gemini</code></pre>
+                <pre><code>cargo install --path crates/council
+council --studio --members codex,claude,gemini</code></pre>
               </div>
             </div>
 
-            <div class="studio-frame stagger-fade" id="studio">
-              <div class="studio-topbar">
-                <span>Amon Hen Studio</span>
-                <span class="studio-status">interactive</span>
-              </div>
-              <div class="studio-layout">
-                <aside class="studio-menu" aria-label="Studio menu preview">
-                  <div class="menu-item active">Settings <span>enter</span></div>
-                  <div class="menu-item">Agents <span>3</span></div>
-                  <div class="menu-item">Linear <span>on</span></div>
-                  <div class="menu-item">Auth <span>tabs</span></div>
-                  <div class="menu-item">Files <span>@</span></div>
-                  <div class="menu-item">Tools <span>logs</span></div>
-                  <div class="menu-item">Help <span>?</span></div>
-                </aside>
-                <div class="studio-main">
-                  <section class="studio-pane">
-                    <div class="studio-pane-title">
-                      <span>Providers</span>
-                      <span>lead: claude</span>
-                    </div>
-                    <div class="studio-pane-body">
-                      {providerRows.map(([name, logo, role, model, effort, capability], index) => (
-                        <div class="provider-row">
-                          <div class="provider-name">
-                            <img src={logo} alt={`${name} logo`} />
-                            <span>{name}</span>
-                          </div>
-                          <div class="provider-meta">
-                            <span class:list={["tag", index === 1 && "red", index === 2 && "blue"]}>{role}</span>
-                            <span class="tag">{model}</span>
-                            <span class="tag">{effort}</span>
-                            <span class:list={["tag", index === 1 && "red", index === 2 && "blue"]}>{capability}</span>
-                          </div>
+            <div class="orchestration-board stagger-fade" id="studio">
+              <div class="board-shell">
+                <div class="board-top">
+                  <span>Amon Hen Studio</span>
+                  <span class="run-state">live run</span>
+                </div>
+                <div class="board-body">
+                  <div class="agent-lanes">
+                    {providerRows.map((provider) => (
+                      <div class={`agent-lane accent-${provider.accent}`}>
+                        <img src={provider.logo} alt={`${provider.name} logo`} />
+                        <div>
+                          <strong>{provider.name}</strong>
+                          <span>{provider.meta}</span>
                         </div>
-                      ))}
-                    </div>
-                  </section>
-                  <section class="studio-pane">
-                    <div class="studio-pane-title">
-                      <span>Telemetry</span>
-                      <span>live</span>
-                    </div>
-                    <div class="studio-pane-body">
-                      <div class="meter-row"><span>codex</span><div class="meter"><span style="width: 72%"></span></div><span>18k</span></div>
-                      <div class="meter-row"><span>claude</span><div class="meter"><span style="width: 84%"></span></div><span>24k</span></div>
-                      <div class="meter-row"><span>gemini</span><div class="meter"><span style="width: 58%"></span></div><span>13k</span></div>
-                      <div class="tool-log">
-                        <div>$ git status --short</div>
-                        <div>$ cargo test --workspace</div>
-                        <div>Linear: attach media + comment</div>
+                        <div class="role-badge">{provider.role}</div>
                       </div>
+                    ))}
+                  </div>
+                  <div class="telemetry-stack">
+                    <div class="telemetry-box">
+                      <small>iterations</small>
+                      <strong>2</strong>
                     </div>
-                  </section>
+                    <div class="telemetry-box">
+                      <small>sub-agents</small>
+                      <strong>6</strong>
+                    </div>
+                    <div class="telemetry-box">
+                      <small>tokens</small>
+                      <strong>55k</strong>
+                    </div>
+                    <div class="telemetry-box">
+                      <small>gate</small>
+                      <strong>CI</strong>
+                    </div>
+                  </div>
+                </div>
+                <div class="handoff-line" aria-label="Workflow preview">
+                  <span>plan</span>
+                  <span>execute</span>
+                  <span>verify</span>
+                  <span>deliver</span>
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        <section class="section below-hero" aria-label="Project signals">
-          <div class="signal">
-            <strong>Native Rust</strong>
-            <span>No tracked npm CLI core. The orchestration path is a Cargo workspace and native binary.</span>
-          </div>
-          <div class="signal">
-            <strong>Provider control</strong>
-            <span>Model, effort, auth, sandbox, MCP, Skills, tools, and permission controls per provider.</span>
-          </div>
-          <div class="signal">
-            <strong>Studio UI</strong>
-            <span>Selectable panes, settings, help, auth onboarding, Linear management, files, and command tools.</span>
-          </div>
-          <div class="signal">
-            <strong>Delivery loop</strong>
-            <span>Project and epic polling, isolated workspaces, retries, reconciliation, and review or CI gates.</span>
+        <section class="section signal-grid" aria-label="Project signals">
+          {signalItems.map(([heading, body]) => (
+            <div class="signal">
+              <strong>{heading}</strong>
+              <span>{body}</span>
+            </div>
+          ))}
+        </section>
+
+        <section class="studio-section">
+          <div class="section">
+            <div class="section-kicker">Studio</div>
+            <h2>A terminal interface that can actually steer the run.</h2>
+            <p class="section-intro">
+              Studio is the control surface for live work. Change roles, tag files, choose auth flows, inspect provider capabilities, watch tool usage, and keep Linear delivery visible while the agents run.
+            </p>
+            <div class="studio-grid">
+              <div class="studio-menu-preview" aria-label="Studio menu preview">
+                <span>Settings <b>enter</b></span>
+                <span>Agents <b>3</b></span>
+                <span>Auth <b>tabs</b></span>
+                <span>Linear <b>on</b></span>
+                <span>Files <b>@</b></span>
+                <span>Tools <b>logs</b></span>
+                <span>Capabilities <b>MCP</b></span>
+                <span>Help <b>?</b></span>
+              </div>
+              <div class="studio-panels">
+                {studioPanels.map(([heading, body]) => (
+                  <div class="studio-panel">
+                    <strong>{heading}</strong>
+                    <span>{body}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
 
-        <section class="section">
-          <div class="section-kicker">What changed</div>
-          <h2>A control plane for actual agent work, not just answer comparison.</h2>
-          <p class="section-intro">
-            Amon Hen keeps the useful parts of consulting multiple models, then adds the work surfaces the project needs: social login bootstrap, provider capability management, local file tagging, shell command visibility, media attachments, Linear execution loops, and token/tool telemetry that stays visible while agents run.
-          </p>
-          <div class="workflows">
-            {workflowCards.map(([heading, body]) => (
-              <article class="workflow">
-                <h3>{heading}</h3>
-                <p>{body}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section class="capability-band" id="capabilities">
-          <div class="section capability-grid">
-            <div>
-              <div class="section-kicker">Provider capabilities</div>
-              <h2>Inherit the local CLI. Override the exact pieces you need.</h2>
-              <p class="section-intro">
-                Codex, Claude, and Gemini each have their own auth story, MCP surface, tool policy, and config files. Amon Hen exposes those differences instead of flattening them away, so Studio and CLI runs can switch between inherited provider config and task-specific overrides.
-              </p>
+        <section class="provider-section" id="providers">
+          <div class="section">
+            <div class="section-kicker">Providers</div>
+            <h2>Keep the native provider surface. Override only what the run needs.</h2>
+            <p class="section-intro">
+              Amon Hen does not flatten Codex, Claude, and Gemini into a toy abstraction. It lets each CLI keep its auth, tools, Skills, MCP servers, model controls, effort controls, and permissions while Studio exposes the switchboard.
+            </p>
+            <div class="provider-grid">
+              {providerRows.map((provider) => (
+                <article class="provider-card">
+                  <img src={provider.logo} alt={`${provider.name} logo`} />
+                  <strong>{provider.name}</strong>
+                  <span class="tagline">{provider.role}</span>
+                  <p>{provider.meta}</p>
+                </article>
+              ))}
             </div>
             <div class="flag-grid" aria-label="Provider capability flags">
               {capabilityFlags.map((flag) => <div class="flag">{flag}</div>)}
@@ -1093,16 +1395,16 @@ const capabilityFlags = [
         </section>
 
         <section class="section" id="linear">
-          <div class="section-kicker">Linear autonomous delivery</div>
-          <h2>Point it at a project or epic and keep the loop moving.</h2>
+          <div class="section-kicker">Linear delivery</div>
+          <h2>Point it at work and make the loop accountable.</h2>
           <p class="section-intro">
-            Amon Hen can poll Linear, pick eligible work, allocate planner/lead/executor phases, create isolated workspaces, run provider teams, attach generated media, update tickets, and reconcile retries until the configured completion gate is met.
+            Target projects or epics, isolate each issue workspace, run the planner/lead/executor phases, retry with reconciliation, attach artifacts, and stop at human review or passing GitHub checks.
           </p>
-          <div class="linear-board">
-            <div class="linear-list">
+          <div class="linear-grid">
+            <div class="linear-steps">
               {linearSteps.map(([heading, body], index) => (
                 <article class="linear-step">
-                  <div class="step-index">{index + 1}</div>
+                  <div class="step-number">{index + 1}</div>
                   <div>
                     <strong>{heading}</strong>
                     <p>{body}</p>
@@ -1110,7 +1412,11 @@ const capabilityFlags = [
                 </article>
               ))}
             </div>
-            <div class="delivery-console" aria-label="Linear delivery command">
+            <div class="run-console" aria-label="Linear delivery command">
+              <div class="run-console-title">
+                <span>terminal</span>
+                <span>autonomous delivery</span>
+              </div>
               <pre><code>council \
   --deliver-linear \
   --linear-project ENG \
@@ -1124,44 +1430,52 @@ const capabilityFlags = [
           </div>
         </section>
 
-        <section class="section install" id="run">
+        <section class="section run" id="run">
           <div>
-            <div class="section-kicker">Run it locally</div>
-            <h2>The project ships as a Rust CLI with a native Studio.</h2>
+            <div class="section-kicker">Run it</div>
+            <h2>Install the Rust binary and use your existing provider auth.</h2>
             <p class="section-intro">
-              Install from the checkout, confirm provider auth, then run the interactive Studio or a scripted delivery command. Social login flows can open browser tabs and return through code paste or deeplink, depending on the provider.
+              Amon Hen shells out to the local provider CLIs you already use. Keep them authenticated, then run Studio or script the exact provider team you want.
             </p>
-            <div class="install-panel" aria-label="Install commands">
-              <pre><code>cargo install --path crates/council
+            <div class="link-row">
+              <a class="button primary" href={docsUrl} target="_blank" rel="noreferrer">Open CLI guide</a>
+              <a class="button" href={crateUrl} target="_blank" rel="noreferrer">View crate</a>
+              <a class="button" href={actionsUrl} target="_blank" rel="noreferrer">Check CI</a>
+            </div>
+          </div>
+          <div class="run-console" aria-label="Install commands">
+            <div class="run-console-title">
+              <span>terminal</span>
+              <span>native Rust</span>
+            </div>
+            <pre><code>cargo install --path crates/council
 council --auth-status --capabilities-status
 council --studio --members codex,claude,gemini
 council --members codex,claude,gemini --team-work 2 "Inspect this repo"</code></pre>
-            </div>
           </div>
-          <div class="facts">
-            <div class="fact">
-              <strong>Binary</strong>
-              <span>`council` remains the compatibility command while the project identity moves to Amon Hen.</span>
-            </div>
-            <div class="fact">
-              <strong>Website</strong>
-              <span>Built from scratch for this rewrite and deployed as a Cloudflare Worker on `amonhen.legit.place`.</span>
-            </div>
-            <div class="fact">
-              <strong>Repository</strong>
-              <span>Main development lives in the Dviros fork, with upstream kept only as inspiration and lineage.</span>
-            </div>
+        </section>
+
+        <section class="section">
+          <div class="section-kicker">Links</div>
+          <h2>Everything useful, one click away.</h2>
+          <div class="resource-grid">
+            {resourceLinks.map(([label, href, body]) => (
+              <a class="resource-card" href={href} target="_blank" rel="noreferrer">
+                <strong>{label}</strong>
+                <span>{body}</span>
+              </a>
+            ))}
           </div>
         </section>
       </main>
 
       <footer class="footer">
         <div class="footer-inner">
-          <span>Amon Hen is an independent Rust-native AI delivery studio by Dviros.</span>
+          <span>Amon Hen is a Rust-native AI delivery studio by Dviros.</span>
           <div class="footer-links">
             <a href={repoUrl} target="_blank" rel="noreferrer">GitHub</a>
-            <a href={docsUrl} target="_blank" rel="noreferrer">Docs</a>
-            <a href={crateUrl} target="_blank" rel="noreferrer">Crate</a>
+            <a href={linkedInUrl} target="_blank" rel="noreferrer">LinkedIn</a>
+            <a href={docsUrl} target="_blank" rel="noreferrer">CLI guide</a>
           </div>
         </div>
       </footer>

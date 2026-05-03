@@ -24,7 +24,7 @@ Amon Hen turns local AI coding CLIs into a coordinated delivery team. Codex can 
 
 The shipped binary remains `council` for compatibility. The project identity is Amon Hen.
 
-This is a ground-up Rust implementation. Node is used only for the separate Astro website under [`web/`](web/).
+This is a ground-up Rust implementation. The CLI and delivery runtime live in the Cargo workspace.
 
 ## Why It Feels Different
 
@@ -130,9 +130,8 @@ Attach local files and command output to the prompt:
 council \
   --members codex,claude,gemini \
   --file crates/council/src/lib.rs \
-  --file web/src/pages/index.astro \
   --cmd "cargo test --workspace --locked" \
-  --cmd "npm --prefix web run build" \
+  --cmd "cargo clippy --workspace --locked -- -D warnings" \
   "Review this change and identify the next fix"
 ```
 
@@ -198,7 +197,7 @@ The delivery loop can:
 ```text
 .
 ├── crates/council/      # Rust crate and council binary
-├── web/                 # Astro site and Cloudflare Worker config
+├── web/                 # Product site
 ├── docs/screenshots/    # README visuals
 └── .github/workflows/   # CI and release automation
 ```
@@ -212,14 +211,6 @@ cargo fmt --all --check
 cargo build --workspace --locked
 cargo test --workspace --locked
 cargo clippy --workspace --locked -- -D warnings
-```
-
-Site:
-
-```bash
-cd web
-npm install
-npm run build
 ```
 
 ## Contributors
