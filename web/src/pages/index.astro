@@ -22,7 +22,7 @@ const releasesUrl = `${repoUrl}/releases`;
 const securityUrl = `${repoUrl}/blob/main/SECURITY.md`;
 const linkedInUrl = "https://www.linkedin.com/in/dviros/";
 const crateName = "amon-hen";
-const crateVersion = "0.1.5";
+const crateVersion = "0.1.16";
 const crateUrl = `https://crates.io/crates/${crateName}`;
 const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
 const robotsContent = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
@@ -71,8 +71,9 @@ const structuredData = JSON.stringify([
     keywords: "Rust CLI, Codex, Claude, Gemini, Linear, AI agents, terminal UI, MCP",
     featureList: [
       "Native Rust orchestration for Codex, Claude, and Gemini",
-      "Interactive Studio with roles, auth, provider capabilities, telemetry, files, and tools",
+      "Interactive Studio with roles, planner modes, auth, provider capabilities, telemetry, files, and tools",
       "Provider-specific model, effort, sandbox, MCP, Skills, tools, and permission controls",
+      "Readable provider stream decoding for Claude, Codex, and Gemini live output",
       "Linear delivery loops with isolated workspaces, retries, reconciliation, media, and review or CI gates",
       "Same-provider sub-agent fanout with lead synthesis",
     ],
@@ -91,22 +92,22 @@ const providerRows = [
   {
     name: "Codex",
     logo: "/agent-logos/codex.png",
-    role: "planner",
-    meta: "model gpt-5.2, effort high, MCP profile repo",
+    role: "executor",
+    meta: "model gpt-5.5, effort xhigh, workspace-write sandbox",
     accent: "cyan",
   },
   {
     name: "Claude",
     logo: "/agent-logos/claude.png",
-    role: "lead",
-    meta: "sonnet, max effort, allowed tools policy",
+    role: "lead + planner",
+    meta: "opus, max effort, parallel planner mode",
     accent: "rose",
   },
   {
     name: "Gemini",
     logo: "/agent-logos/gemini.svg",
     role: "executor",
-    meta: "gemini-pro, high effort, settings profile",
+    meta: "gemini-3.1-pro-preview, high effort, settings profile",
     accent: "blue",
   },
 ];
@@ -114,12 +115,12 @@ const providerRows = [
 const signalItems = [
   ["Rust runtime", "Cargo workspace, native binary, scriptable stdout, observable stderr."],
   ["Provider-native", "Keep each CLI's auth, MCP, Skills, tools, models, and permissions intact."],
-  ["Interactive Studio", "Selectable panes for roles, auth, files, tools, Linear, telemetry, and help."],
+  ["Interactive Studio", "Selectable panes for roles, planner mode, auth, files, tools, Linear, telemetry, and help."],
   ["Delivery loop", "Poll Linear projects or epics until human review or GitHub CI success."],
 ];
 
 const studioPanels = [
-  ["Settings", "Lead, planner, handoff, iterations, model and effort per provider."],
+  ["Settings", "Lead, planner, blocking or parallel planner mode, iterations, model and effort per provider."],
   ["Capabilities", "Inherit local provider config or override MCP, Skills, tools, and agents."],
   ["Telemetry", "Token usage, prompt commands, shell tools, sub-agent fanout, and retries."],
   ["Linear", "Project and epic queues, issue workspaces, media attachments, comments, gates."],
@@ -1256,7 +1257,7 @@ const resourceLinks = [
               <div class="eyebrow">Rust-native AI delivery studio</div>
               <h1>{siteName}</h1>
               <p class="hero-copy">
-                Coordinate Codex, Claude, Gemini, and Linear from one native terminal. Pick the planner, appoint the lead, hand work across providers, fan out same-provider sub-agents, and keep the loop moving until review or green CI.
+                Coordinate Codex, Claude, Gemini, and Linear from one native terminal. Pick the planner, appoint the lead, choose blocking or parallel planning, fan out same-provider sub-agents, and keep the loop moving until review or green CI.
               </p>
               <div class="hero-actions">
                 <a class="button primary" href="#run">Run the Studio</a>
@@ -1278,8 +1279,8 @@ const resourceLinks = [
                   <span>terminal</span>
                   <span>{examplePrompt}</span>
                 </div>
-                <pre><code>cargo install amon-hen
-amon-hen --studio --members codex,claude,gemini</code></pre>
+                <pre><code>cargo install amon-hen --version 0.1.16 --force
+amon-hen --studio --members codex,claude,gemini --planner-mode parallel</code></pre>
               </div>
             </div>
 
@@ -1305,11 +1306,11 @@ amon-hen --studio --members codex,claude,gemini</code></pre>
                   <div class="telemetry-stack">
                     <div class="telemetry-box">
                       <small>iterations</small>
-                      <strong>2</strong>
+                      <strong>10</strong>
                     </div>
                     <div class="telemetry-box">
                       <small>sub-agents</small>
-                      <strong>6</strong>
+                      <strong>6+</strong>
                     </div>
                     <div class="telemetry-box">
                       <small>tokens</small>
@@ -1322,7 +1323,7 @@ amon-hen --studio --members codex,claude,gemini</code></pre>
                   </div>
                 </div>
                 <div class="handoff-line" aria-label="Workflow preview">
-                  <span>plan</span>
+                  <span>parallel plan</span>
                   <span>execute</span>
                   <span>verify</span>
                   <span>deliver</span>
@@ -1423,7 +1424,8 @@ amon-hen --studio --members codex,claude,gemini</code></pre>
   --linear-until-complete \
   --linear-completion-gate review-or-ci \
   --members codex,claude,gemini \
-  --planner codex \
+  --planner claude \
+  --planner-mode parallel \
   --lead claude \
   --team-work 2</code></pre>
             </div>
@@ -1448,10 +1450,10 @@ amon-hen --studio --members codex,claude,gemini</code></pre>
               <span>terminal</span>
               <span>native Rust</span>
             </div>
-            <pre><code>cargo install amon-hen
+            <pre><code>cargo install amon-hen --version 0.1.16 --force
 amon-hen --auth-status --capabilities-status
-amon-hen --studio --members codex,claude,gemini
-amon-hen --members codex,claude,gemini --team-work 2 "Inspect this repo"</code></pre>
+amon-hen --studio --members codex,claude,gemini --planner-mode parallel
+amon-hen --members codex,claude,gemini --planner claude --planner-mode parallel --lead claude "Inspect this repo"</code></pre>
           </div>
         </section>
 

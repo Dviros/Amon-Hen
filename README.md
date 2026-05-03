@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen
+cargo install amon-hen --version 0.1.16 --force
 ```
 
 From a checkout:
@@ -71,32 +71,41 @@ amon-hen \
   "Inspect this repo and propose the cleanest next patch"
 ```
 
-Pick roles, handoff, iterations, and same-provider sub-agents:
+Run Claude as lead/planner without blocking Codex and Gemini:
 
 ```bash
 amon-hen \
   --members codex,claude,gemini \
-  --planner codex \
+  --planner claude \
+  --planner-mode parallel \
   --lead claude \
+  --summarizer claude \
   --handoff \
-  --iterations 2 \
+  --iterations 10 \
   --team-work 2 \
-  "Design and implement the next safe change"
+  --codex-sub-agents 3 \
+  --claude-sub-agents 0 \
+  --gemini-sub-agents 3 \
+  "Design, implement, verify, and summarize the next safe change"
 ```
+
+Use `--planner-mode blocking` when executor prompts should wait for a planner handoff first. Use `--planner-mode parallel` when the planner/lead should run alongside the executors in the same iteration.
 
 Control model and effort per provider:
 
 ```bash
 amon-hen \
   --members codex,claude,gemini \
-  --codex-model gpt-5.2 \
-  --codex-effort high \
-  --claude-model sonnet \
+  --codex-model gpt-5.5 \
+  --codex-effort xhigh \
+  --claude-model opus \
   --claude-effort max \
-  --gemini-model gemini-pro \
+  --gemini-model gemini-3.1-pro-preview \
   --gemini-effort high \
   "Compare implementation options and choose one"
 ```
+
+Model names are passed through to the underlying provider CLI. If a provider rejects a model name, choose one that your local CLI/account accepts.
 
 Override provider permissions and capability surfaces:
 
@@ -148,7 +157,8 @@ amon-hen \
   --linear-limit 4 \
   --linear-max-attempts 3 \
   --members codex,claude,gemini \
-  --planner codex \
+  --planner claude \
+  --planner-mode parallel \
   --lead claude \
   --team-work 2
 ```
@@ -163,6 +173,47 @@ amon-hen \
   "Summarize tool usage, tokens, and final recommendation"
 ```
 
+Stream live NDJSON progress for dashboards and automation:
+
+```bash
+amon-hen \
+  --json-stream \
+  --members codex,claude,gemini \
+  --planner claude \
+  --planner-mode parallel \
+  --lead claude \
+  --handoff \
+  "Show provider progress while the run is still active"
+```
+
+Record an interactive Studio run with terminal playback:
+
+```bash
+export AMON_HEN_RUN_DIR="$HOME/amon-hen-runs/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$AMON_HEN_RUN_DIR"
+printf '%s\n' "Inspect this repository, implement the safest high-impact patch, run tests, and report evidence." > "$AMON_HEN_RUN_DIR/prompt.txt"
+
+script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
+  --studio \
+  --cwd /path/to/repo \
+  --members codex,claude,gemini \
+  --planner claude \
+  --planner-mode parallel \
+  --lead claude \
+  --summarizer claude \
+  --handoff \
+  --iterations 10 \
+  --team-work 2 \
+  --codex-sub-agents 3 \
+  --claude-sub-agents 0 \
+  --gemini-sub-agents 3 \
+  --timeout 7200 \
+  --max-member-chars 140000 \
+  --cmd 'pwd && hostname && uptime' \
+  --cmd 'git status -sb' \
+  \"\$(cat \"$AMON_HEN_RUN_DIR/prompt.txt\")\""
+```
+
 ![Amon Hen command line](docs/screenshots/terminal-run.svg)
 
 ## Studio
@@ -173,9 +224,11 @@ Studio is the native TUI for live work:
 - manual auth method selection per provider
 - browser-tab social login handoff with code paste or deeplink support
 - lead/planner/executor role changes after launch
+- `blocking` or `parallel` planner mode
 - per-provider model, effort, sandbox, permissions, and capability settings
 - provider Skills, MCP, and tools inherit/override toggles
-- token, sub-agent, prompt-command, and tool-command telemetry
+- token, sub-agent, prompt-command, provider-stream, and tool-command telemetry
+- readable Claude, Codex, and Gemini stream decoding instead of raw provider JSON
 - double-Ctrl+C exit so one accidental interrupt does not kill a long run
 
 ## Linear Delivery

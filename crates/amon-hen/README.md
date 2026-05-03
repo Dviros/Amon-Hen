@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen
+cargo install amon-hen --version 0.1.16 --force
 amon-hen --help
 ```
 
@@ -41,7 +41,7 @@ Open the native interactive Studio:
 amon-hen --studio --members codex,claude,gemini
 ```
 
-Studio gives you selectable panes for settings, agents, auth, Linear, files, tools, provider capabilities, token usage, command logs, and help. It supports role changes after launch, manual provider auth method selection, browser-tab social login handoff, file tagging, command tagging, per-provider capability overrides, and double-Ctrl+C exit.
+Studio gives you selectable panes for settings, agents, auth, Linear, files, tools, provider capabilities, token usage, command logs, and help. It supports role changes after launch, manual provider auth method selection, browser-tab social login handoff, file tagging, command tagging, per-provider capability overrides, readable provider stream decoding, and double-Ctrl+C exit.
 
 ## Basic Runs
 
@@ -58,19 +58,44 @@ Pick roles and let providers hand work to each other:
 ```bash
 amon-hen \
   --members codex,claude,gemini \
-  --planner codex \
+  --planner claude \
   --lead claude \
   --handoff \
   --iterations 2 \
   "Design, implement, verify, and summarize the next safe change"
 ```
 
+Keep the lead/planner running in parallel with executors:
+
+```bash
+amon-hen \
+  --studio \
+  --members codex,claude,gemini \
+  --planner claude \
+  --planner-mode parallel \
+  --lead claude \
+  --summarizer claude \
+  --handoff \
+  --iterations 10 \
+  --team-work 2 \
+  --codex-sub-agents 3 \
+  --claude-sub-agents 0 \
+  --gemini-sub-agents 3 \
+  "Plan, implement, verify, and reconcile this project"
+```
+
+Planner modes:
+
+- `--planner-mode blocking` waits for the planner output before executor prompts are built. This is the default and is best when you want a true planner handoff first.
+- `--planner-mode parallel` starts the planner/lead in the same iteration as the executors. This is best when Claude leads/plans but Codex and Gemini should not sit queued.
+
 Fan out real same-provider sub-agents:
 
 ```bash
 amon-hen \
   --members codex,claude,gemini \
-  --planner codex \
+  --planner claude \
+  --planner-mode parallel \
   --lead claude \
   --team-work 2 \
   "Split this task into parallel work and reconcile the final patch"
@@ -83,14 +108,16 @@ Set model and effort per provider:
 ```bash
 amon-hen \
   --members codex,claude,gemini \
-  --codex-model gpt-5.2 \
-  --codex-effort high \
-  --claude-model sonnet \
+  --codex-model gpt-5.5 \
+  --codex-effort xhigh \
+  --claude-model opus \
   --claude-effort max \
-  --gemini-model gemini-pro \
+  --gemini-model gemini-3.1-pro-preview \
   --gemini-effort high \
   "Compare implementation options and choose one"
 ```
+
+Model values are passed through to the provider CLI. If Claude, Codex, or Gemini rejects a model value, replace it with a model name your installed CLI/account supports.
 
 Set permissions and execution policy:
 
@@ -173,7 +200,8 @@ amon-hen \
   --linear-limit 4 \
   --linear-max-attempts 3 \
   --members codex,claude,gemini \
-  --planner codex \
+  --planner claude \
+  --planner-mode parallel \
   --lead claude \
   --team-work 2
 ```
@@ -192,6 +220,19 @@ amon-hen \
   "Summarize tool usage, token usage, and final recommendation"
 ```
 
+Emit live NDJSON progress while providers are still running:
+
+```bash
+amon-hen \
+  --json-stream \
+  --members codex,claude,gemini \
+  --planner claude \
+  --planner-mode parallel \
+  --lead claude \
+  --handoff \
+  "Show live provider status, tokens, tools, and final result"
+```
+
 Use verbose output when you want to see provider commands and telemetry in a plain terminal run:
 
 ```bash
@@ -201,6 +242,59 @@ amon-hen \
   --cmd "git status --short" \
   "Explain the current repo state"
 ```
+
+Provider stream decoding:
+
+- Claude nested `stream_event` messages are decoded into readable assistant text and tool starts.
+- Claude `input_json_delta.partial_json`, hook/session events, hidden thinking/signatures, and provider plumbing are suppressed in Studio logs.
+- Codex command events and Gemini text/function-call events are summarized into readable tool or assistant lines.
+
+## Recorded Studio Runs
+
+Use `script` when you want an audit trail of an interactive Studio session:
+
+```bash
+export AMON_HEN_RUN_DIR="$HOME/amon-hen-runs/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$AMON_HEN_RUN_DIR"
+
+cat > "$AMON_HEN_RUN_DIR/prompt.txt" <<'PROMPT'
+Orchestrator:
+Use as many subagents as useful, but split ownership to avoid merge conflicts. Keep the main agent responsible for integration and final judgment. All proposed changes must pass tests and be integrated deliberately.
+
+Review the repository, implement the highest-impact safe patch, run tests, and report changed files, commands, failures, blockers, and next steps.
+PROMPT
+
+script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
+  --studio \
+  --cwd /path/to/repo \
+  --members codex,claude,gemini \
+  --planner claude \
+  --planner-mode parallel \
+  --lead claude \
+  --summarizer claude \
+  --handoff \
+  --iterations 10 \
+  --team-work 2 \
+  --codex-sub-agents 3 \
+  --claude-sub-agents 0 \
+  --gemini-sub-agents 3 \
+  --codex-model gpt-5.5 \
+  --claude-model opus \
+  --gemini-model gemini-3.1-pro-preview \
+  --codex-sandbox workspace-write \
+  --claude-permission-mode acceptEdits \
+  --codex-effort xhigh \
+  --claude-effort max \
+  --gemini-effort high \
+  --timeout 7200 \
+  --max-member-chars 140000 \
+  --cmd 'pwd && hostname && uptime' \
+  --cmd 'git status -sb' \
+  --cmd 'git log --oneline -5' \
+  \"\$(cat \"$AMON_HEN_RUN_DIR/prompt.txt\")\""
+```
+
+The terminal recording is written to `$AMON_HEN_RUN_DIR/studio.typescript`.
 
 ## Development Checks
 
