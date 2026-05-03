@@ -346,10 +346,8 @@ fn handle_input_event(
         KeyCode::Backspace => {
             state.input_buffer.pop();
         }
-        KeyCode::Char(ch) => {
-            if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                state.input_buffer.push(ch);
-            }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.input_buffer.push(ch);
         }
         _ => {}
     }

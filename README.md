@@ -198,7 +198,7 @@ The delivery loop can:
 ```text
 .
 ├── crates/council/      # Rust crate and council binary
-├── web/                 # Astro site, Cloudflare Worker config, Pages fallback
+├── web/                 # Astro site and Cloudflare Worker config
 ├── docs/screenshots/    # README visuals
 └── .github/workflows/   # CI, release, and site deployment
 ```
@@ -226,12 +226,15 @@ npm run build
 
 The canonical site is [amonhen.legit.place](https://amonhen.legit.place).
 
-The repo keeps two deployment paths:
+The production path is Cloudflare Workers:
 
 - Cloudflare Worker config in [`web/wrangler.jsonc`](web/wrangler.jsonc)
-- GitHub Pages workflow in [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
+- Custom domain route for `amonhen.legit.place`
+- `workers_dev` disabled so the Worker is not exposed on the account `workers.dev` subdomain
+- Host guard middleware that returns `404` for any non-`amonhen.legit.place` host
+- Static security headers in [`web/public/_headers`](web/public/_headers)
 
-GitHub Pages is the DNS-backed fallback while Cloudflare Worker deploy permissions are being fixed.
+The GitHub Pages workflow remains available as a static preview path for CI-built artifacts, but it does not own the production custom domain.
 
 ## Standalone Status
 
