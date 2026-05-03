@@ -1,4 +1,4 @@
-use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, ValueEnum};
+use clap::{error::ErrorKind, ArgAction, Parser, ValueEnum};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -518,9 +518,7 @@ where
 {
     let raw_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     if raw_args.first().and_then(|value| value.to_str()) == Some("help") {
-        let mut command = CliArgs::command();
-        let _ = command.print_long_help();
-        println!();
+        println!("{}", render_cli_help());
         return 0;
     }
 
@@ -529,6 +527,14 @@ where
     let parsed = match CliArgs::try_parse_from(parse_args) {
         Ok(parsed) => parsed,
         Err(error) => {
+            if error.kind() == ErrorKind::DisplayHelp {
+                println!("{}", render_cli_help());
+                return 0;
+            }
+            if error.kind() == ErrorKind::DisplayVersion {
+                println!("{VERSION}");
+                return 0;
+            }
             let exit_code = parse_error_exit_code(error.kind());
             let _ = error.print();
             return exit_code;
@@ -619,10 +625,7 @@ where
     }
 
     if resolved.prompt.trim().is_empty() {
-        eprintln!(
-            "No query provided.\n\n{}",
-            CliArgs::command().render_long_help()
-        );
+        eprintln!("No query provided.\n\n{}", render_cli_help());
         return 64;
     }
 
@@ -662,6 +665,106 @@ fn parse_error_exit_code(kind: ErrorKind) -> i32 {
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
         _ => 64,
     }
+}
+
+fn render_cli_help() -> &'static str {
+    r#"Amon Hen
+Rust-native orchestration for Codex, Claude, Gemini, and Linear delivery.
+
+Usage:
+  amon-hen [OPTIONS] "your task"
+  amon-hen --studio --members codex,claude,gemini "your task"
+  amon-hen --deliver-linear --linear-project "Project" --linear-until-complete
+
+Core run:
+  --members codex,claude,gemini       Providers to consult. Also supports --codex, --claude, --gemini, --all.
+  --summarizer auto|codex|claude|gemini
+                                      Provider used for synthesis. auto tries the configured order.
+  --studio                            Open the interactive native Studio.
+  --plain                             Disable rich terminal output for script-friendly runs.
+  --json, --json-stream               Emit JSON or newline-delimited JSON.
+  -q, --quiet                         Print the synthesis only.
+  -d, --verbose                       Include provider details, telemetry, and tool usage.
+
+Models, effort, and permissions:
+  --codex-model NAME                  Model passed to Codex.
+  --claude-model NAME                 Model passed to Claude.
+  --gemini-model NAME                 Model passed to Gemini.
+  --effort low|medium|high            Shared default effort.
+  --codex-effort low|medium|high|xhigh
+  --claude-effort low|medium|high|xhigh|max
+  --gemini-effort low|medium|high
+  --codex-sandbox read-only|workspace-write|danger-full-access
+  --claude-permission-mode MODE       Claude permission mode such as plan, acceptEdits, bypassPermissions.
+
+Auth and provider capabilities:
+  --auth-login                        Start provider social-login flows.
+  --auth-status                       Show configured auth sources for each provider.
+  --codex-auth auto|api-key|social-login|oauth|keychain
+  --claude-auth auto|api-key|social-login|oauth|keychain
+  --gemini-auth auto|api-key|social-login|oauth|keychain
+  --capabilities-status               Probe provider Skills / MCP / Tools support.
+  --codex-capabilities inherit|override
+  --claude-capabilities inherit|override
+  --gemini-capabilities inherit|override
+  --codex-config PATH                 Extra Codex config file, repeatable.
+  --codex-mcp-profile NAME            Codex MCP profile.
+  --claude-mcp-config PATH            Claude MCP config file, repeatable.
+  --claude-allowed-tools LIST         Allowed Claude tools.
+  --claude-disallowed-tools LIST      Disallowed Claude tools.
+  --claude-tools LIST                 Claude tool list override.
+  --claude-agent NAME                 Claude agent profile.
+  --claude-agents-json JSON           Claude agents JSON override.
+  --claude-plugin-dir PATH            Claude plugin directory, repeatable.
+  --gemini-settings PATH              Gemini settings file.
+  --gemini-tools-profile LIST         Gemini tool profile list.
+  --gemini-allowed-mcp-servers LIST   Gemini MCP allow-list.
+  --gemini-policy LIST                Gemini policy values.
+  --gemini-admin-policy LIST          Gemini admin policy values.
+
+Team workflow:
+  --handoff                           Feed planner/lead context between providers.
+  --planner codex|claude|gemini       Assign the planning role.
+  --lead codex|claude|gemini          Assign the lead reviewer/synthesizer role.
+  --iterations N                      Run multiple provider rounds per prompt.
+  --team-work N                       Spawn N same-provider sub-agents per provider.
+  --codex-sub-agents N                Override Codex sub-agent count.
+  --claude-sub-agents N               Override Claude sub-agent count.
+  --gemini-sub-agents N               Override Gemini sub-agent count.
+  --file PATH                         Tag a local file into the prompt context, repeatable.
+  --cmd COMMAND                       Run a local command and include its telemetry, repeatable.
+
+Linear delivery:
+  --deliver-linear                    Deliver Linear work instead of a one-shot prompt.
+  --linear-watch                      Poll Linear for matching work.
+  --linear-until-complete             Continue until review/delivery gate is met.
+  --linear-issue ID,ID                Target specific Linear issues.
+  --linear-project NAME,NAME          Target Linear projects.
+  --linear-epic NAME,NAME             Target Linear epics.
+  --linear-team KEY                   Restrict to a Linear team.
+  --linear-state NAME                 Restrict by Linear workflow state.
+  --linear-completion-gate delivered|review|ci
+  --linear-max-concurrency N          Isolated workspace concurrency.
+  --linear-max-attempts N             Retry attempts per issue.
+  --linear-workspace-strategy worktree|local
+  --linear-workspace-root PATH        Root for per-issue workspaces.
+  --linear-observability-dir PATH     Logs, reconciliation, and run telemetry.
+  --linear-attach-media PATH,PATH     Attach generated media back to Linear.
+
+Runtime:
+  --cwd PATH                          Working directory for provider CLIs.
+  --timeout SECONDS                   Per-provider timeout.
+  --max-member-chars N                Max provider output included in synthesis.
+  --color auto|always|never           Color mode.
+  --no-color                          Disable color.
+  -v, --version                       Print version.
+  -h, --help                          Show this help.
+
+Examples:
+  amon-hen --studio --members codex,claude,gemini "Inspect this repo"
+  amon-hen --members codex,claude,gemini --planner codex --lead claude --handoff --iterations 2 "Suggest the cleanest next patch"
+  amon-hen --deliver-linear --linear-project "Developer Platform" --linear-until-complete --team-work 2
+  amon-hen --auth-login --auth-login-providers codex,claude,gemini"#
 }
 
 fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
@@ -2870,6 +2973,19 @@ mod tests {
         assert_eq!(short_help.kind(), ErrorKind::DisplayHelp);
         assert_eq!(parse_error_exit_code(long_help.kind()), 0);
         assert_eq!(parse_error_exit_code(short_help.kind()), 0);
+    }
+
+    #[test]
+    fn rendered_help_is_grouped_and_compact() {
+        let help = render_cli_help();
+
+        assert!(help.contains("Core run:"));
+        assert!(help.contains("Models, effort, and permissions:"));
+        assert!(help.contains("Auth and provider capabilities:"));
+        assert!(help.contains("Linear delivery:"));
+        assert!(help.contains("--members codex,claude,gemini"));
+        assert!(help.contains("--claude-permission-mode MODE"));
+        assert!(!help.contains("\n\n\n"));
     }
 
     #[test]

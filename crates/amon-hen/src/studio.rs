@@ -1,11 +1,12 @@
 use super::*;
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::execute;
+use crossterm::style::Print;
 use crossterm::terminal::{
     self, disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
     LeaveAlternateScreen,
 };
+use crossterm::{execute, queue};
 
 const MENU: [&str; 15] = [
     "Run / re-run",
@@ -981,18 +982,34 @@ fn adjust_linear(state: &mut StudioState, delta: isize) -> Result<(), String> {
 }
 
 fn draw(state: &StudioState) -> Result<(), String> {
-    let (width, height) = terminal::size().unwrap_or((100, 28));
-    let width = usize::from(width).saturating_sub(1).max(1);
-    let height = usize::from(height).max(1);
+    let (columns, rows) = terminal::size().unwrap_or((100, 28));
+    let width = safe_terminal_width(columns);
+    let height = usize::from(rows).max(1);
+    let lines = render_screen_lines(state, width, height);
     let mut out = io::stderr();
     execute!(out, MoveTo(0, 0), Clear(ClearType::All))
         .map_err(|error| format!("Failed to draw Studio: {error}"))?;
-
-    if width < 64 || height < 18 {
-        write_compact(&mut out, state, width, height)?;
-        return out.flush().map_err(|error| error.to_string());
+    for (row, line) in lines.iter().take(height).enumerate() {
+        let row = u16::try_from(row).unwrap_or(u16::MAX);
+        queue!(
+            out,
+            MoveTo(0, row),
+            Clear(ClearType::CurrentLine),
+            Print(studio_clip(line, width))
+        )
+        .map_err(|error| format!("Failed to draw Studio row: {error}"))?;
     }
+    out.flush().map_err(|error| error.to_string())
+}
 
+fn safe_terminal_width(columns: u16) -> usize {
+    usize::from(columns).saturating_sub(2).max(1)
+}
+
+fn render_screen_lines(state: &StudioState, width: usize, height: usize) -> Vec<String> {
+    if width < 64 || height < 18 {
+        return compact_lines(state, width, height);
+    }
     let header = format!(
         "Amon Hen Studio | members {} | lead {} | planner {} | handoff {} | {}x",
         state.resolved.members.join(","),
@@ -1005,33 +1022,37 @@ fn draw(state: &StudioState) -> Result<(), String> {
         },
         state.resolved.raw.iterations
     );
-    write_clipped_line(&mut out, width, &header)?;
-    write_clipped_line(&mut out, width, &state.status)?;
-    writeln!(out).map_err(|error| error.to_string())?;
 
+    let mut lines = Vec::with_capacity(height);
+    lines.push(studio_clip(&header, width));
+    lines.push(studio_clip(&state.status, width));
+    lines.push(String::new());
+
+    let help = if state.show_help {
+        help_lines()
+            .into_iter()
+            .map(|line| studio_clip(line, width))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let prompt_height = if state.input_mode.is_some() { 4 } else { 3 };
-    let pane_height = height.saturating_sub(3 + prompt_height);
-    let top_height = (pane_height / 2).max(4);
-    let bottom_height = pane_height.saturating_sub(top_height).max(4);
+    let pane_height = height.saturating_sub(3 + prompt_height + help.len());
+    let top_height = pane_height.div_ceil(2);
+    let bottom_height = pane_height.saturating_sub(top_height);
     let panes = state.pane_order.clone();
     let top = panes.iter().take(3).copied().collect::<Vec<_>>();
     let bottom = panes.iter().skip(3).take(3).copied().collect::<Vec<_>>();
-    write_row(&mut out, state, &top, width, top_height)?;
-    write_row(&mut out, state, &bottom, width, bottom_height)?;
-    write_prompt(&mut out, state, width)?;
-    if state.show_help {
-        write_help(&mut out, width)?;
-    }
-    out.flush().map_err(|error| error.to_string())
+    lines.extend(render_row_lines(state, &top, width, top_height));
+    lines.extend(render_row_lines(state, &bottom, width, bottom_height));
+    lines.extend(prompt_lines(state, width).into_iter().take(prompt_height));
+    lines.extend(help);
+    lines.truncate(height);
+    lines
 }
 
-fn write_compact(
-    out: &mut impl Write,
-    state: &StudioState,
-    width: usize,
-    height: usize,
-) -> Result<(), String> {
-    let lines = [
+fn compact_lines(state: &StudioState, width: usize, height: usize) -> Vec<String> {
+    [
         "Amon Hen Studio",
         "Terminal too small for pane layout.",
         "Resize wider/taller, or run without --studio for plain output.",
@@ -1040,13 +1061,14 @@ fn write_compact(
         &format!("Status: {}", state.status),
         &format!("Members: {}", state.resolved.members.join(",")),
         &format!("Prompt: {}", state.prompt.trim()),
-    ];
-    for line in lines.iter().take(height) {
-        write_clipped_line(out, width, line)?;
-    }
-    Ok(())
+    ]
+    .iter()
+    .take(height)
+    .map(|line| studio_clip(line, width))
+    .collect()
 }
 
+#[cfg(test)]
 fn write_row(
     out: &mut impl Write,
     state: &StudioState,
@@ -1054,6 +1076,18 @@ fn write_row(
     row_width: usize,
     height: usize,
 ) -> Result<(), String> {
+    for row in render_row_lines(state, panes, row_width, height) {
+        write_clipped_line(out, row_width, &row)?;
+    }
+    Ok(())
+}
+
+fn render_row_lines(
+    state: &StudioState,
+    panes: &[Pane],
+    row_width: usize,
+    height: usize,
+) -> Vec<String> {
     let pane_count = panes.len().max(1);
     let gap_width = pane_count.saturating_sub(1);
     let width = row_width.saturating_sub(gap_width) / pane_count;
@@ -1061,6 +1095,7 @@ fn write_row(
         .iter()
         .map(|pane| render_pane(state, *pane, width, height))
         .collect::<Vec<_>>();
+    let mut rows = Vec::with_capacity(height);
     for line in 0..height {
         let mut row = String::new();
         for (index, pane) in rendered.iter().enumerate() {
@@ -1072,11 +1107,12 @@ fn write_row(
                 width,
             ));
         }
-        write_clipped_line(out, row_width, &row)?;
+        rows.push(studio_clip(&row, row_width));
     }
-    Ok(())
+    rows
 }
 
+#[cfg(test)]
 fn write_clipped_line(out: &mut impl Write, width: usize, line: &str) -> Result<(), String> {
     writeln!(out, "{}", studio_clip(line, width)).map_err(|error| error.to_string())
 }
@@ -1492,7 +1528,7 @@ fn boxed_lines(title: &str, lines: &[String], width: usize, height: usize) -> Ve
     out
 }
 
-fn write_prompt(out: &mut impl Write, state: &StudioState, width: usize) -> Result<(), String> {
+fn prompt_lines(state: &StudioState, width: usize) -> Vec<String> {
     let prompt = if state.prompt.trim().is_empty() {
         "(empty prompt)"
     } else {
@@ -1503,36 +1539,41 @@ fn write_prompt(out: &mut impl Write, state: &StudioState, width: usize) -> Resu
         state.resolved.raw.files.len(),
         state.resolved.raw.commands.len()
     );
-    write_clipped_line(out, width, &"-".repeat(width))?;
-    write_clipped_line(out, width, &format!("Prompt | {context}"))?;
-    write_clipped_line(out, width, prompt)?;
+    let mut lines = vec![
+        "-".repeat(width),
+        format!("Prompt | {context}"),
+        prompt.to_string(),
+    ];
     if let Some(mode) = &state.input_mode {
-        write_clipped_line(
-            out,
-            width,
-            &format!(
-                "Editing {:?}: {}_",
-                mode,
-                studio_clip(&state.input_buffer, width.saturating_sub(20))
-            ),
-        )?;
+        lines.push(format!(
+            "Editing {:?}: {}_",
+            mode,
+            studio_clip(&state.input_buffer, width.saturating_sub(20))
+        ));
+    }
+    lines
+        .into_iter()
+        .map(|line| studio_clip(&line, width))
+        .collect()
+}
+
+#[cfg(test)]
+fn write_prompt(out: &mut impl Write, state: &StudioState, width: usize) -> Result<(), String> {
+    for line in prompt_lines(state, width) {
+        write_clipped_line(out, width, &line)?;
     }
     Ok(())
 }
 
-fn write_help(out: &mut impl Write, width: usize) -> Result<(), String> {
-    let lines = [
+fn help_lines() -> [&'static str; 6] {
+    [
         "",
         "Help: Tab focus | Up/Down select | Left/Right modify | Enter activate/edit",
         "r run | ? help | [ and ] move focused pane | Ctrl+C twice quits",
         "Menu actions support prompt editing, file tagging, command context, social login, auth status, Linear delivery, and capability refresh.",
         "Settings manage lead/planner/executors, per-provider sub-agent counts, permissions, auth, effort, and Linear delivery controls.",
         "Capabilities manages inherit/override plus provider MCP, skills, tools, plugins, policies, and extension profiles.",
-    ];
-    for line in lines {
-        write_clipped_line(out, width, line)?;
-    }
-    Ok(())
+    ]
 }
 
 fn render_noninteractive_studio_snapshot(resolved: &ResolvedArgs) -> String {
@@ -1718,6 +1759,34 @@ mod tests {
                 "line exceeded terminal width: {line}"
             );
             assert!(!line.contains("...[truncated]"));
+        }
+    }
+
+    #[test]
+    fn full_screen_lines_never_exceed_terminal_width() {
+        let mut state = test_state(
+            "Inspect this repo and suggest the cleanest next patch with enough text to force clipping",
+        );
+        state.show_help = true;
+        state.pane_order = vec![
+            Pane::Results,
+            Pane::Capabilities,
+            Pane::Linear,
+            Pane::Menu,
+            Pane::Settings,
+            Pane::Agents,
+        ];
+
+        for (width, height) in [(78, 24), (118, 28), (198, 42)] {
+            let lines = render_screen_lines(&state, width, height);
+            assert!(lines.len() <= height);
+            for line in lines {
+                assert!(!line.contains('\n'));
+                assert!(
+                    line.chars().count() <= width,
+                    "line exceeded terminal width {width}: {line}"
+                );
+            }
         }
     }
 
