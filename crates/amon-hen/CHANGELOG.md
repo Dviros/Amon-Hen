@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9
+
+- Added live verbose runner progress so long provider/team runs print start, spawn, heartbeat, and completion lines instead of appearing frozen behind the banner.
+- Updated Studio run actions to announce the external live run and force verbose progress while the dashboard temporarily yields the terminal.
+
 ## 0.1.8
 
 - Rebuilt Studio on Ratatui with a color dashboard, provider cards, live configuration panes, token/tool telemetry, and a compact fallback for smaller terminals.

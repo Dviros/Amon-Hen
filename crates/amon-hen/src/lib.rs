@@ -460,6 +460,7 @@ struct EngineRunOptions {
     total_iterations: usize,
     team_size: usize,
     is_sub_agent: bool,
+    live: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1023,7 +1024,7 @@ fn status_from_command(
     args: &[String],
     cwd: &Path,
 ) -> ProviderAuthStatus {
-    let result = run_command(bin, args, cwd, None, 15_000, HashMap::new());
+    let result = run_command(bin, args, cwd, None, 15_000, HashMap::new(), None);
     let configured = result.code == Some(0);
     ProviderAuthStatus {
         provider: provider.to_string(),
@@ -1186,7 +1187,15 @@ fn run_capability_probe(bin: &str, args: &[&str], cwd: &Path) -> CommandTelemetr
         .iter()
         .map(|arg| (*arg).to_string())
         .collect::<Vec<_>>();
-    command_telemetry(&run_command(bin, &args, cwd, None, 20_000, HashMap::new()))
+    command_telemetry(&run_command(
+        bin,
+        &args,
+        cwd,
+        None,
+        20_000,
+        HashMap::new(),
+        None,
+    ))
 }
 
 fn render_provider_capability_statuses(statuses: &[ProviderCapabilityStatus]) -> String {
@@ -1514,6 +1523,10 @@ fn build_prompt_context(resolved: &ResolvedArgs) -> Result<PromptContext, String
         } else {
             vec!["-lc".to_string(), command.clone()]
         };
+        let live_label = resolved
+            .raw
+            .verbose
+            .then(|| format!("context command `{}`", truncate(command, 80)));
         let result = run_command(
             shell,
             &args,
@@ -1521,6 +1534,7 @@ fn build_prompt_context(resolved: &ResolvedArgs) -> Result<PromptContext, String
             None,
             resolved.raw.timeout * 1000,
             HashMap::new(),
+            live_label.as_deref(),
         );
         commands.push(command_telemetry(&result));
         sections.push(format!(
@@ -1752,6 +1766,7 @@ fn engine_options(
         total_iterations: workflow.iterations,
         team_size: *workflow.teams.get(member).unwrap_or(&DEFAULT_TEAM_SIZE),
         is_sub_agent: false,
+        live: resolved.raw.verbose,
     }
 }
 
@@ -1978,6 +1993,21 @@ fn run_engine_single(
 ) -> EngineResult {
     let started = Instant::now();
     let bin = resolve_binary(name);
+    let live = options.live;
+    if options.live {
+        eprintln!(
+            "[amon-hen] start {} role={} iteration={}/{}{}",
+            name,
+            options.role,
+            options.iteration,
+            options.total_iterations,
+            if options.is_sub_agent {
+                " sub-agent"
+            } else {
+                ""
+            }
+        );
+    }
     let result = match Engine::parse(name) {
         Some(Engine::Codex) => run_codex(&bin, &options),
         Some(Engine::Claude) => run_claude(&bin, &options),
@@ -1994,14 +2024,27 @@ fn run_engine_single(
             duration_ms: started.elapsed().as_millis(),
         },
     };
-    finalize_engine(
+    let engine = finalize_engine(
         name,
         &bin,
         started.elapsed().as_millis(),
         result,
         options,
         sub_agents,
-    )
+    );
+    if live {
+        eprintln!(
+            "[amon-hen] done {} role={} status={} elapsed={:.1}s tokens={} tools={} sub-agents={}",
+            engine.name,
+            engine.role,
+            engine.status,
+            engine.duration_ms as f64 / 1000.0,
+            engine.token_usage.total,
+            engine.tool_calls.len(),
+            engine.sub_agents.len()
+        );
+    }
+    engine
 }
 
 fn push_arg(args: &mut Vec<String>, flag: &str, value: impl Into<String>) {
@@ -2077,6 +2120,7 @@ fn run_codex(bin: &str, options: &EngineRunOptions) -> CommandResult {
         Some(&options.prompt),
         options.timeout_ms,
         HashMap::new(),
+        live_label("codex", options).as_deref(),
     );
     if let Ok(output) = fs::read_to_string(output_path) {
         if !output.trim().is_empty() {
@@ -2142,6 +2186,7 @@ fn run_claude(bin: &str, options: &EngineRunOptions) -> CommandResult {
         Some(&options.prompt),
         options.timeout_ms,
         HashMap::new(),
+        live_label("claude", options).as_deref(),
     )
 }
 
@@ -2186,7 +2231,24 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
             );
         }
     }
-    run_command(bin, &args, &options.cwd, None, options.timeout_ms, envs)
+    run_command(
+        bin,
+        &args,
+        &options.cwd,
+        None,
+        options.timeout_ms,
+        envs,
+        live_label("gemini", options).as_deref(),
+    )
+}
+
+fn live_label(name: &str, options: &EngineRunOptions) -> Option<String> {
+    options.live.then(|| {
+        format!(
+            "{} {} iteration {}/{}",
+            name, options.role, options.iteration, options.total_iterations
+        )
+    })
 }
 
 fn prepare_gemini_settings(options: &EngineRunOptions) -> Option<TempSettings> {
@@ -2244,8 +2306,12 @@ fn run_command(
     stdin_text: Option<&str>,
     timeout_ms: u64,
     envs: HashMap<String, String>,
+    live_label: Option<&str>,
 ) -> CommandResult {
     let started = Instant::now();
+    if let Some(label) = live_label {
+        eprintln!("[amon-hen] spawn {label}");
+    }
     let mut child = match Command::new(command)
         .args(args)
         .current_dir(cwd)
@@ -2280,6 +2346,7 @@ fn run_command(
     let stdout = child.stdout.take().map(read_pipe);
     let stderr = child.stderr.take().map(read_pipe);
     let timeout = Duration::from_millis(timeout_ms);
+    let mut next_live_tick = Duration::from_secs(10);
     let mut timed_out = false;
     let code;
     loop {
@@ -2295,6 +2362,22 @@ fn run_command(
                     let status = child.wait().ok();
                     code = status.and_then(|status| status.code());
                     break;
+                }
+                if let Some(label) = live_label {
+                    let elapsed = started.elapsed();
+                    if elapsed >= next_live_tick {
+                        let timeout_detail = if timeout_ms > 0 {
+                            format!("/{}s", timeout_ms / 1000)
+                        } else {
+                            String::new()
+                        };
+                        eprintln!(
+                            "[amon-hen] running {label} for {}s{}",
+                            elapsed.as_secs(),
+                            timeout_detail
+                        );
+                        next_live_tick += Duration::from_secs(10);
+                    }
                 }
                 thread::sleep(Duration::from_millis(25));
             }

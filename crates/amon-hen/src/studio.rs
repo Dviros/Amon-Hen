@@ -206,16 +206,25 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
             StudioAction::None => {}
             StudioAction::Quit => return 130,
             StudioAction::RunAmonHen => {
-                run_external_action(&mut guard, || run_amon_hen_from_studio(&mut state));
-            }
-            StudioAction::SocialLogin => {
-                run_external_action(&mut guard, || match run_social_login(&state.resolved) {
-                    Ok(()) => state.status = "Social login completed".to_string(),
-                    Err(error) => state.status = format!("Social login failed: {error}"),
+                state.status =
+                    "Running outside the dashboard; live progress will stream below".to_string();
+                let _ = draw(&state);
+                run_external_action(&mut guard, "Running Amon Hen", || {
+                    run_amon_hen_from_studio(&mut state)
                 });
             }
+            StudioAction::SocialLogin => {
+                run_external_action(
+                    &mut guard,
+                    "Starting social login",
+                    || match run_social_login(&state.resolved) {
+                        Ok(()) => state.status = "Social login completed".to_string(),
+                        Err(error) => state.status = format!("Social login failed: {error}"),
+                    },
+                );
+            }
             StudioAction::AuthStatus => {
-                run_external_action(&mut guard, || {
+                run_external_action(&mut guard, "Refreshing auth status", || {
                     state.last_auth_result = Some(render_auth_statuses(&collect_auth_statuses(
                         &state.resolved,
                     )));
@@ -224,7 +233,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
                 });
             }
             StudioAction::CapabilitiesStatus => {
-                run_external_action(&mut guard, || {
+                run_external_action(&mut guard, "Refreshing provider capabilities", || {
                     state.last_capability_result = Some(render_provider_capability_statuses(
                         &collect_provider_capability_statuses(&state.resolved),
                     ));
@@ -233,7 +242,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
                 });
             }
             StudioAction::LinearStatus => {
-                run_external_action(&mut guard, || {
+                run_external_action(&mut guard, "Refreshing Linear status", || {
                     match linear_delivery::get_linear_status(&state.resolved) {
                         Ok(status) => {
                             state.last_linear_result =
@@ -246,7 +255,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
                 });
             }
             StudioAction::LinearDeliver => {
-                run_external_action(&mut guard, || {
+                run_external_action(&mut guard, "Delivering Linear work", || {
                     state.resolved.raw.deliver_linear = true;
                     match linear_delivery::run_linear_delivery(&state.resolved) {
                         Ok(result) => {
@@ -267,10 +276,14 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
     }
 }
 
-fn run_external_action(guard: &mut TerminalGuard, action: impl FnOnce()) {
+fn run_external_action(guard: &mut TerminalGuard, label: &str, action: impl FnOnce()) {
     let _ = execute!(io::stderr(), Show, LeaveAlternateScreen);
     let _ = disable_raw_mode();
+    eprintln!(
+        "\n[amon-hen] {label}. Live progress follows; the dashboard will return when done.\n"
+    );
     action();
+    eprintln!("\n[amon-hen] {label} finished. Returning to Studio.\n");
     let _ = enable_raw_mode();
     let _ = execute!(
         io::stderr(),
@@ -284,6 +297,7 @@ fn run_external_action(guard: &mut TerminalGuard, action: impl FnOnce()) {
 fn run_amon_hen_from_studio(state: &mut StudioState) {
     state.status = "Running Amon Hen...".to_string();
     let mut resolved = state.resolved.clone();
+    resolved.raw.verbose = true;
     resolved.prompt = state.prompt.clone();
     let prompt_context = match build_prompt_context(&resolved) {
         Ok(context) => context,

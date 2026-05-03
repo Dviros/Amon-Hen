@@ -1688,7 +1688,7 @@ fn check_github_ci(
             "--json".to_string(),
             "name,bucket,state,workflow,completedAt,link".to_string(),
         ];
-        let result = run_command("gh", &args, cwd, None, 120_000, HashMap::new());
+        let result = run_command("gh", &args, cwd, None, 120_000, HashMap::new(), None);
         let interpreted = interpret_github_checks(&result, &selector, gate);
         if interpreted.success
             || result.code != Some(8)
@@ -1840,7 +1840,15 @@ fn prepare_issue_workspace(
             workspace_path.display().to_string(),
             "HEAD".to_string(),
         ];
-        let result = run_command("git", &args, &resolved.cwd, None, 120_000, HashMap::new());
+        let result = run_command(
+            "git",
+            &args,
+            &resolved.cwd,
+            None,
+            120_000,
+            HashMap::new(),
+            None,
+        );
         if result.code == Some(0) {
             return Ok(IssueWorkspace {
                 cwd: workspace_path.display().to_string(),
