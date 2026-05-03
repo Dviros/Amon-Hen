@@ -2947,7 +2947,7 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
     }
     args.extend([
         "-p".to_string(),
-        options.prompt.clone(),
+        String::new(),
         "--skip-trust".to_string(),
         "--approval-mode".to_string(),
         "plan".to_string(),
@@ -2972,6 +2972,7 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
     run_command(
         CommandRequest::new(bin, &args, &options.cwd, options.timeout_ms)
             .envs(envs)
+            .stdin_text(Some(&options.prompt))
             .progress(command_progress_with_input(
                 live_label("gemini", options).as_deref(),
                 options.progress.clone(),
@@ -3136,6 +3137,7 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
     let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
+            let status = spawn_error_status(&error);
             if let Some(progress) = &progress {
                 emit_runtime_event(
                     &progress.sink,
@@ -3144,7 +3146,7 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
                         provider_from_live_label(&progress.label),
                         role_from_live_label(&progress.label),
                         ProgressStage::Done,
-                        Some("missing"),
+                        Some(status),
                         iteration_from_live_label(&progress.label),
                         total_iterations_from_live_label(&progress.label),
                         role_from_live_label(&progress.label)
@@ -3171,12 +3173,6 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
         }
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Some(text) = stdin_text {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-    }
-
     let stdout = child
         .stdout
         .take()
@@ -3185,6 +3181,14 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
         .stderr
         .take()
         .map(|pipe| read_pipe(pipe, progress.clone(), "stderr"));
+    let mut stdin_writer = child.stdin.take().and_then(|mut stdin| {
+        stdin_text.map(|text| {
+            let text = text.to_string();
+            thread::spawn(move || {
+                let _ = stdin.write_all(text.as_bytes());
+            })
+        })
+    });
     let timeout = Duration::from_millis(timeout_ms);
     let mut next_live_tick = Duration::from_secs(10);
     let mut timed_out = false;
@@ -3251,6 +3255,9 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
                 thread::sleep(Duration::from_millis(25));
             }
             Err(error) => {
+                if let Some(handle) = stdin_writer.take() {
+                    let _ = handle.join();
+                }
                 return CommandResult {
                     command: command.to_string(),
                     args: args.to_vec(),
@@ -3262,9 +3269,13 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
                     error: Some(error.to_string()),
                     timeout_ms,
                     duration_ms: started.elapsed().as_millis(),
-                }
+                };
             }
         }
+    }
+
+    if let Some(handle) = stdin_writer {
+        let _ = handle.join();
     }
 
     CommandResult {
@@ -3742,8 +3753,8 @@ fn finalize_engine(
     };
     let status = if command_result.cancelled {
         "cancelled"
-    } else if command_result.error.is_some() {
-        "missing"
+    } else if let Some(error) = command_result.error.as_deref() {
+        spawn_failure_status(error)
     } else if command_result.timed_out {
         "timeout"
     } else if command_result.code != Some(0) || output.trim().is_empty() {
@@ -3806,8 +3817,8 @@ fn compact_failure(result: &CommandResult) -> String {
 fn command_telemetry(result: &CommandResult) -> CommandTelemetry {
     let status = if result.cancelled {
         "cancelled"
-    } else if result.error.is_some() {
-        "missing"
+    } else if let Some(error) = result.error.as_deref() {
+        spawn_failure_status(error)
     } else if result.timed_out {
         "timeout"
     } else if result.code == Some(0) {
@@ -3824,6 +3835,26 @@ fn command_telemetry(result: &CommandResult) -> CommandTelemetry {
         stdout_chars: result.stdout.len(),
         stderr_chars: result.stderr.len(),
         timed_out: result.timed_out,
+    }
+}
+
+fn spawn_error_status(error: &io::Error) -> &'static str {
+    if error.kind() == io::ErrorKind::NotFound {
+        "missing"
+    } else {
+        "error"
+    }
+}
+
+fn spawn_failure_status(error: &str) -> &'static str {
+    let lowered = error.to_ascii_lowercase();
+    if lowered.contains("no such file")
+        || lowered.contains("not found")
+        || lowered.contains("cannot find")
+    {
+        "missing"
+    } else {
+        "error"
     }
 }
 
@@ -5005,10 +5036,78 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| pair == ["--admin-policy", "locked"]));
-        assert!(gemini
-            .args
-            .windows(2)
-            .any(|pair| pair == ["-p", "gemini prompt"]));
+        assert!(gemini.args.windows(2).any(|pair| pair == ["-p", ""]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn gemini_prompt_is_sent_on_stdin_to_avoid_arg_limit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let fake_gemini = temp.path().join("gemini-fake");
+        fs::write(
+            &fake_gemini,
+            "#!/bin/sh\nprintf 'ARGS:'\nfor arg in \"$@\"; do printf '<%s>' \"$arg\"; done\nprintf '\\nSTDIN:'\ncat\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake_gemini).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_gemini, permissions).unwrap();
+
+        let prompt = "x".repeat(300_000);
+        let options = EngineRunOptions {
+            prompt: prompt.clone(),
+            cwd: std::env::current_dir().unwrap(),
+            timeout_ms: 5_000,
+            effort: None,
+            model: Some("gemini-test".to_string()),
+            permission: None,
+            auth: DEFAULT_AUTH_MODE.to_string(),
+            capability: ProviderCapability {
+                mode: CAPABILITY_INHERIT.to_string(),
+                config: vec![],
+                mcp_profile: None,
+                mcp_config: vec![],
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: vec![],
+                agent: None,
+                agents_json: None,
+                plugin_dirs: vec![],
+                strict_mcp_config: false,
+                disable_slash_commands: false,
+                settings: None,
+                tools_profile: vec![],
+                allowed_mcp_servers: vec![],
+                policy: vec![],
+                admin_policy: vec![],
+            },
+            role: "executor".to_string(),
+            iteration: 1,
+            total_iterations: 1,
+            team_size: 0,
+            is_sub_agent: false,
+            live: false,
+            progress: None,
+            cancel: None,
+        };
+        let result = run_gemini(fake_gemini.to_str().unwrap(), &options);
+
+        assert_eq!(result.code, Some(0));
+        assert!(result.args.iter().any(|arg| arg == "-p"));
+        assert!(!result.args.iter().any(|arg| arg == &prompt));
+        assert!(result.stdout.contains("ARGS:<--model><gemini-test><-p><>"));
+        assert!(result.stdout.ends_with(&prompt));
+    }
+
+    #[test]
+    fn spawn_failure_status_distinguishes_missing_from_other_spawn_errors() {
+        assert_eq!(spawn_failure_status("No such file or directory"), "missing");
+        assert_eq!(
+            spawn_failure_status("Argument list too long (os error 7)"),
+            "error"
+        );
     }
 
     #[test]

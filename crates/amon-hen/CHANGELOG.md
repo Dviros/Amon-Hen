@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.17
+
+- Send Gemini prompts through stdin instead of argv so large Studio contexts and sub-agent prompts do not hit OS argument-length limits.
+- Keep `-p` enabled for Gemini headless mode while avoiding the full prompt as a command-line argument.
+- Classify non-`NotFound` spawn failures as `error` instead of incorrectly showing them as missing providers.
+
 ## 0.1.16
 
 - Decode nested Claude `stream_event` records into readable assistant/tool messages.
