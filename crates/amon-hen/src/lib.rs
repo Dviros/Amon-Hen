@@ -528,6 +528,7 @@ struct CommandResult {
 struct CommandProgress {
     label: String,
     sink: Option<ProgressSink>,
+    input_tokens: usize,
 }
 
 struct CommandRequest<'a> {
@@ -1612,9 +1613,18 @@ fn runtime_event_kind(
 }
 
 fn command_progress(label: Option<&str>, sink: Option<ProgressSink>) -> Option<CommandProgress> {
+    command_progress_with_input(label, sink, 0)
+}
+
+fn command_progress_with_input(
+    label: Option<&str>,
+    sink: Option<ProgressSink>,
+    input_tokens: usize,
+) -> Option<CommandProgress> {
     label.map(|label| CommandProgress {
         label: label.to_string(),
         sink,
+        input_tokens,
     })
 }
 
@@ -2828,9 +2838,10 @@ fn run_codex(bin: &str, options: &EngineRunOptions) -> CommandResult {
     let mut result = run_command(
         CommandRequest::new(bin, &args, &options.cwd, options.timeout_ms)
             .stdin_text(Some(&options.prompt))
-            .progress(command_progress(
+            .progress(command_progress_with_input(
                 live_label("codex", options).as_deref(),
                 options.progress.clone(),
+                estimate_tokens(&options.prompt),
             ))
             .cancel(options.cancel.clone()),
     );
@@ -2894,9 +2905,10 @@ fn run_claude(bin: &str, options: &EngineRunOptions) -> CommandResult {
     run_command(
         CommandRequest::new(bin, &args, &options.cwd, options.timeout_ms)
             .stdin_text(Some(&options.prompt))
-            .progress(command_progress(
+            .progress(command_progress_with_input(
                 live_label("claude", options).as_deref(),
                 options.progress.clone(),
+                estimate_tokens(&options.prompt),
             ))
             .cancel(options.cancel.clone()),
     )
@@ -2946,9 +2958,10 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
     run_command(
         CommandRequest::new(bin, &args, &options.cwd, options.timeout_ms)
             .envs(envs)
-            .progress(command_progress(
+            .progress(command_progress_with_input(
                 live_label("gemini", options).as_deref(),
                 options.progress.clone(),
+                estimate_tokens(&options.prompt),
             ))
             .cancel(options.cancel.clone()),
     )
@@ -3150,8 +3163,14 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
         }
     }
 
-    let stdout = child.stdout.take().map(read_pipe);
-    let stderr = child.stderr.take().map(read_pipe);
+    let stdout = child
+        .stdout
+        .take()
+        .map(|pipe| read_pipe(pipe, progress.clone(), "stdout"));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|pipe| read_pipe(pipe, progress.clone(), "stderr"));
     let timeout = Duration::from_millis(timeout_ms);
     let mut next_live_tick = Duration::from_secs(10);
     let mut timed_out = false;
@@ -3252,15 +3271,184 @@ fn run_command(request: CommandRequest<'_>) -> CommandResult {
     }
 }
 
-fn read_pipe<R>(mut pipe: R) -> thread::JoinHandle<String>
+fn read_pipe<R>(
+    mut pipe: R,
+    progress: Option<CommandProgress>,
+    stream: &'static str,
+) -> thread::JoinHandle<String>
 where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
         let mut text = String::new();
-        let _ = pipe.read_to_string(&mut text);
+        let mut pending = String::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = match pipe.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(_) => break,
+            };
+            let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
+            text.push_str(&chunk);
+            pending.push_str(&chunk);
+            while let Some(newline) = pending.find('\n') {
+                let line = pending[..newline].trim_end_matches('\r').to_string();
+                pending = pending[newline + 1..].to_string();
+                emit_provider_stream_line(&progress, stream, &line, &text);
+            }
+            if !chunk.contains('\n') {
+                emit_provider_stream_chunk(&progress, stream, &chunk, &text);
+            }
+        }
+        if !pending.trim().is_empty() {
+            emit_provider_stream_line(&progress, stream, &pending, &text);
+        }
         text
     })
+}
+
+fn emit_provider_stream_chunk(
+    progress: &Option<CommandProgress>,
+    stream: &str,
+    chunk: &str,
+    accumulated: &str,
+) {
+    let clipped = chunk.trim();
+    if clipped.len() >= 24 {
+        emit_provider_stream_line(progress, stream, clipped, accumulated);
+    }
+}
+
+fn emit_provider_stream_line(
+    progress: &Option<CommandProgress>,
+    stream: &str,
+    line: &str,
+    accumulated: &str,
+) {
+    let Some(progress) = progress else {
+        return;
+    };
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    let provider = provider_from_live_label(&progress.label);
+    let role = role_from_live_label(&progress.label);
+    let output_tokens = estimate_tokens(accumulated);
+    let token_usage = provider.map(|_| TokenUsage {
+        input: progress.input_tokens,
+        output: output_tokens,
+        total: progress.input_tokens + output_tokens,
+        estimated: true,
+        source: "live-stream-estimate".to_string(),
+    });
+    let tool_calls = provider
+        .map(|provider| extract_tool_usage(provider, line, ""))
+        .unwrap_or_default();
+    let visible = provider
+        .and_then(|provider| provider_visible_stream(provider, line))
+        .unwrap_or_else(|| sanitize_status_detail(line));
+    emit_runtime_event(
+        &progress.sink,
+        progress.sink.is_none(),
+        progress_event_with_context(
+            provider,
+            role,
+            ProgressStage::Heartbeat,
+            Some("streaming"),
+            iteration_from_live_label(&progress.label),
+            total_iterations_from_live_label(&progress.label),
+            role.is_some_and(|role| role.contains(":sub-agent-")),
+            None,
+            token_usage,
+            tool_calls,
+            format!(
+                "[amon-hen] stream {} {stream}: {}",
+                progress.label,
+                truncate(&visible, 220)
+            ),
+        ),
+    );
+}
+
+fn provider_visible_stream(provider: &str, line: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    match provider {
+        "claude" => claude_visible_stream(&value),
+        "gemini" => gemini_visible_stream(&value),
+        "codex" => codex_visible_stream(&value),
+        _ => None,
+    }
+}
+
+fn claude_visible_stream(value: &Value) -> Option<String> {
+    if let Some(result) = value.get("result").and_then(Value::as_str) {
+        return Some(format!("result: {}", sanitize_status_detail(result)));
+    }
+    if let Some(status) = value.get("status").and_then(Value::as_str) {
+        return Some(format!("status: {status}"));
+    }
+    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("event");
+    if let Some(content) = value.pointer("/message/content").and_then(Value::as_array) {
+        let mut parts = Vec::new();
+        for block in content {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        parts.push(sanitize_status_detail(text));
+                    }
+                }
+                Some("tool_use") => {
+                    let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    parts.push(format!("tool: {name}"));
+                }
+                _ => {}
+            }
+        }
+        if !parts.is_empty() {
+            return Some(parts.join(" | "));
+        }
+    }
+    Some(event_type.to_string())
+}
+
+fn gemini_visible_stream(value: &Value) -> Option<String> {
+    value
+        .get("response")
+        .and_then(Value::as_str)
+        .map(sanitize_status_detail)
+        .or_else(|| {
+            value
+                .get("text")
+                .and_then(Value::as_str)
+                .map(sanitize_status_detail)
+        })
+        .or_else(|| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+}
+
+fn codex_visible_stream(value: &Value) -> Option<String> {
+    value
+        .get("message")
+        .and_then(Value::as_str)
+        .map(sanitize_status_detail)
+        .or_else(|| {
+            value
+                .get("event")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
 }
 
 fn finalize_engine(
@@ -4906,6 +5094,46 @@ mod tests {
             "cancelled command took {:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn command_streams_visible_output_and_live_token_usage() {
+        if !command_available("sh") {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress: ProgressSink = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        });
+        let args = [
+            "-c".to_string(),
+            "printf 'visible-work\\n'; printf '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}]}}\\n'"
+                .to_string(),
+        ];
+
+        let result = run_command(CommandRequest::new("sh", &args, &cwd, 5_000).progress(Some(
+            CommandProgress {
+                label: "codex planner:sub-agent-1 iteration 1/1".to_string(),
+                sink: Some(progress),
+                input_tokens: 10,
+            },
+        )));
+
+        assert_eq!(result.code, Some(0));
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event.message.contains("visible-work")
+                && event
+                    .token_usage
+                    .as_ref()
+                    .is_some_and(|usage| usage.total > 10)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeEventKind::ToolUsage
+                && event.tool_calls.iter().any(|tool| tool.name == "Bash")
+        }));
     }
 
     #[test]

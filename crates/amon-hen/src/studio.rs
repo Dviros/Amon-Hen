@@ -14,7 +14,7 @@ use ratatui::widgets::{
     Block, BorderType, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -112,6 +112,9 @@ struct StudioState {
     profile_names: Vec<String>,
     provider_status: HashMap<String, String>,
     provider_detail: HashMap<String, String>,
+    live_token_usage: HashMap<String, TokenUsage>,
+    live_tool_counts: HashMap<String, usize>,
+    live_sub_agents: HashMap<String, HashSet<String>>,
     status: String,
     input_mode: Option<InputMode>,
     input_buffer: String,
@@ -344,6 +347,9 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         profile_names,
         provider_status: HashMap::new(),
         provider_detail: HashMap::new(),
+        live_token_usage: HashMap::new(),
+        live_tool_counts: HashMap::new(),
+        live_sub_agents: HashMap::new(),
         status: "Ready".to_string(),
         input_mode: None,
         input_buffer: String::new(),
@@ -450,6 +456,9 @@ fn start_studio_run(state: &mut StudioState) {
     state.run_events.clear();
     state.provider_status.clear();
     state.provider_detail.clear();
+    state.live_token_usage.clear();
+    state.live_tool_counts.clear();
+    state.live_sub_agents.clear();
     state.last_result = None;
     state.status = "Amon Hen running inside Studio".to_string();
     state.focus = Pane::Results;
@@ -980,7 +989,23 @@ fn drain_studio_job(state: &mut StudioState) {
 
 fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
     push_run_event(state, sanitize_status_detail(&event.message));
-    if let Some(provider) = event.provider {
+    if let Some(provider) = event.provider.clone() {
+        if let Some(usage) = event.token_usage.clone() {
+            state.live_token_usage.insert(provider.clone(), usage);
+        }
+        if !event.tool_calls.is_empty() {
+            let count = state.live_tool_counts.entry(provider.clone()).or_default();
+            *count = count.saturating_add(event.tool_calls.len());
+        }
+        if event.is_sub_agent {
+            if let Some(role) = event.role.clone() {
+                state
+                    .live_sub_agents
+                    .entry(provider.clone())
+                    .or_default()
+                    .insert(role);
+            }
+        }
         let status = event.status.unwrap_or_else(|| match event.stage {
             ProgressStage::Done => "done".to_string(),
             _ => "running".to_string(),
@@ -2354,7 +2379,7 @@ fn render_provider_cards(frame: &mut Frame<'_>, area: Rect, state: &StudioState)
         .split(area);
     let max_tokens = members
         .iter()
-        .map(|member| provider_result(state, member).map_or(0, |result| result.token_usage.total))
+        .map(|member| provider_live_token_usage(state, member).map_or(0, |usage| usage.total))
         .max()
         .unwrap_or(0)
         .max(1);
@@ -2382,11 +2407,11 @@ fn render_provider_card(
         .unwrap_or_else(|| role_for(member, &workflow));
     let status = provider_status(state, member, result);
     let health = provider_health(state, member);
-    let token_usage = result.map(|result| &result.token_usage);
+    let token_usage = provider_live_token_usage(state, member);
     let total_tokens = token_usage.map_or(0, |usage| usage.total);
     let percent = ((total_tokens.saturating_mul(100)) / max_tokens).min(100) as u16;
-    let tools = result.map_or(0, |result| result.tool_calls.len());
-    let sub_agents = result.map_or(0, |result| result.sub_agents.len());
+    let tools = provider_live_tool_count(state, member);
+    let sub_agents = provider_live_sub_agent_count(state, member);
     let command = state
         .provider_detail
         .get(member)
@@ -2489,24 +2514,15 @@ fn render_token_and_tools(frame: &mut Frame<'_>, area: Rect, state: &StudioState
         .iter()
         .map(|member| {
             let result = provider_result(state, member);
+            let token_usage = provider_live_token_usage(state, member);
             Row::new(vec![
                 member.to_string(),
                 provider_status(state, member, result).to_string(),
-                result.map_or("0".to_string(), |result| {
-                    compact_count(result.token_usage.input)
-                }),
-                result.map_or("0".to_string(), |result| {
-                    compact_count(result.token_usage.output)
-                }),
-                result.map_or("0".to_string(), |result| {
-                    compact_count(result.token_usage.total)
-                }),
-                result.map_or("0".to_string(), |result| {
-                    result.tool_calls.len().to_string()
-                }),
-                result.map_or("0".to_string(), |result| {
-                    result.sub_agents.len().to_string()
-                }),
+                token_usage.map_or("0".to_string(), |usage| compact_count(usage.input)),
+                token_usage.map_or("0".to_string(), |usage| compact_count(usage.output)),
+                token_usage.map_or("0".to_string(), |usage| compact_count(usage.total)),
+                provider_live_tool_count(state, member).to_string(),
+                provider_live_sub_agent_count(state, member).to_string(),
             ])
             .style(Style::default().fg(provider_color(member)).bg(STUDIO_PANEL))
         })
@@ -2823,6 +2839,24 @@ fn provider_result<'a>(state: &'a StudioState, member: &str) -> Option<&'a Engin
         .members
         .iter()
         .find(|result| result.name == member)
+}
+
+fn provider_live_token_usage<'a>(state: &'a StudioState, member: &str) -> Option<&'a TokenUsage> {
+    provider_result(state, member)
+        .map(|result| &result.token_usage)
+        .or_else(|| state.live_token_usage.get(member))
+}
+
+fn provider_live_tool_count(state: &StudioState, member: &str) -> usize {
+    provider_result(state, member)
+        .map(|result| result.tool_calls.len())
+        .unwrap_or_else(|| *state.live_tool_counts.get(member).unwrap_or(&0))
+}
+
+fn provider_live_sub_agent_count(state: &StudioState, member: &str) -> usize {
+    provider_result(state, member)
+        .map(|result| result.sub_agents.len())
+        .unwrap_or_else(|| state.live_sub_agents.get(member).map_or(0, HashSet::len))
 }
 
 fn provider_effort(state: &StudioState, member: &str) -> String {
@@ -3534,15 +3568,44 @@ mod tests {
                 "[amon-hen] spawn codex planner iteration 1/1",
             ),
         );
+        apply_progress_event(
+            &mut state,
+            progress_event_with_context(
+                Some("codex"),
+                Some("planner:sub-agent-1"),
+                ProgressStage::Heartbeat,
+                Some("streaming"),
+                Some(1),
+                Some(1),
+                true,
+                None,
+                Some(TokenUsage {
+                    input: 100,
+                    output: 23,
+                    total: 123,
+                    estimated: true,
+                    source: "test".to_string(),
+                }),
+                vec![ToolUsage {
+                    name: "Bash".to_string(),
+                    kind: "tool".to_string(),
+                    status: "running".to_string(),
+                    detail: "git status".to_string(),
+                }],
+                "[amon-hen] stream codex planner:sub-agent-1 stdout: visible work",
+            ),
+        );
 
         assert_eq!(
             state.provider_status.get("codex").map(String::as_str),
-            Some("running")
+            Some("streaming")
         );
         let (rendered, _) = render_to_string(&state, 180, 46);
         assert!(rendered.contains("Live run log"));
         assert!(rendered.contains("spawn codex"));
-        assert!(rendered.contains("running"));
+        assert!(rendered.contains("streaming"));
+        assert!(rendered.contains("123"));
+        assert!(rendered.contains("visible work"));
     }
 
     #[test]
@@ -3800,6 +3863,9 @@ mod tests {
             profile_names: Vec::new(),
             provider_status: HashMap::new(),
             provider_detail: HashMap::new(),
+            live_token_usage: HashMap::new(),
+            live_tool_counts: HashMap::new(),
+            live_sub_agents: HashMap::new(),
             status: "Ready".to_string(),
             input_mode: None,
             input_buffer: String::new(),

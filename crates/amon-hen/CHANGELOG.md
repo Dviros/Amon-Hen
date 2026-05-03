@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.12
+
+- Stream provider stdout/stderr into Studio and `--json-stream` while provider CLIs are still running.
+- Update live Studio token/tool/sub-agent counters from progress events instead of waiting for final results.
+- Surface visible provider output snippets and observed tool calls in the run log, while keeping hidden model reasoning hidden.
+
 ## 0.1.11
 
 - Added a real runtime event bus and true `--json-stream` NDJSON progress events, including ordered provider, token/tool, iteration, and final result events.
