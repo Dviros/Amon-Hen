@@ -426,6 +426,26 @@ struct CommandTelemetry {
     timed_out: bool,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum ProgressStage {
+    Context,
+    Start,
+    Spawn,
+    Heartbeat,
+    Done,
+}
+
+#[derive(Debug, Clone)]
+struct ProgressEvent {
+    provider: Option<String>,
+    role: Option<String>,
+    stage: ProgressStage,
+    status: Option<String>,
+    message: String,
+}
+
+type ProgressSink = Arc<dyn Fn(ProgressEvent) + Send + Sync + 'static>;
+
 #[derive(Debug)]
 struct PromptContext {
     prompt: String,
@@ -445,7 +465,13 @@ struct CommandResult {
     duration_ms: u128,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+struct CommandProgress {
+    label: String,
+    sink: Option<ProgressSink>,
+}
+
+#[derive(Clone)]
 struct EngineRunOptions {
     prompt: String,
     cwd: PathBuf,
@@ -461,6 +487,7 @@ struct EngineRunOptions {
     team_size: usize,
     is_sub_agent: bool,
     live: bool,
+    progress: Option<ProgressSink>,
 }
 
 #[derive(Debug, Clone)]
@@ -1198,6 +1225,41 @@ fn run_capability_probe(bin: &str, args: &[&str], cwd: &Path) -> CommandTelemetr
     ))
 }
 
+fn emit_runtime_event(
+    progress: &Option<ProgressSink>,
+    fallback_to_stderr: bool,
+    event: ProgressEvent,
+) {
+    if let Some(progress) = progress {
+        progress(event);
+    } else if fallback_to_stderr {
+        eprintln!("{}", event.message);
+    }
+}
+
+fn progress_event(
+    provider: Option<&str>,
+    role: Option<&str>,
+    stage: ProgressStage,
+    status: Option<&str>,
+    message: impl Into<String>,
+) -> ProgressEvent {
+    ProgressEvent {
+        provider: provider.map(ToString::to_string),
+        role: role.map(ToString::to_string),
+        stage,
+        status: status.map(ToString::to_string),
+        message: message.into(),
+    }
+}
+
+fn command_progress(label: Option<&str>, sink: Option<ProgressSink>) -> Option<CommandProgress> {
+    label.map(|label| CommandProgress {
+        label: label.to_string(),
+        sink,
+    })
+}
+
 fn render_provider_capability_statuses(statuses: &[ProviderCapabilityStatus]) -> String {
     let mut lines = vec!["Provider capabilities".to_string()];
     for status in statuses {
@@ -1501,6 +1563,13 @@ fn open_browser_url(url: &str) -> Result<(), String> {
 }
 
 fn build_prompt_context(resolved: &ResolvedArgs) -> Result<PromptContext, String> {
+    build_prompt_context_with_progress(resolved, None)
+}
+
+fn build_prompt_context_with_progress(
+    resolved: &ResolvedArgs,
+    progress: Option<ProgressSink>,
+) -> Result<PromptContext, String> {
     let mut prompt = resolved.prompt.trim().to_string();
     let mut sections = Vec::new();
     let mut commands = Vec::new();
@@ -1523,10 +1592,19 @@ fn build_prompt_context(resolved: &ResolvedArgs) -> Result<PromptContext, String
         } else {
             vec!["-lc".to_string(), command.clone()]
         };
-        let live_label = resolved
-            .raw
-            .verbose
+        let live_label = (resolved.raw.verbose || progress.is_some())
             .then(|| format!("context command `{}`", truncate(command, 80)));
+        emit_runtime_event(
+            &progress,
+            false,
+            progress_event(
+                None,
+                None,
+                ProgressStage::Context,
+                None,
+                format!("[amon-hen] context command `{}`", truncate(command, 80)),
+            ),
+        );
         let result = run_command(
             shell,
             &args,
@@ -1534,9 +1612,26 @@ fn build_prompt_context(resolved: &ResolvedArgs) -> Result<PromptContext, String
             None,
             resolved.raw.timeout * 1000,
             HashMap::new(),
-            live_label.as_deref(),
+            command_progress(live_label.as_deref(), progress.clone()),
         );
-        commands.push(command_telemetry(&result));
+        let telemetry = command_telemetry(&result);
+        emit_runtime_event(
+            &progress,
+            false,
+            progress_event(
+                None,
+                None,
+                ProgressStage::Done,
+                Some(&telemetry.status),
+                format!(
+                    "[amon-hen] context command `{}` {} in {:.1}s",
+                    truncate(command, 80),
+                    telemetry.status,
+                    result.duration_ms as f64 / 1000.0
+                ),
+            ),
+        );
+        commands.push(telemetry);
         sections.push(format!(
             "--- command: {} (exit {}) ---\nstdout:\n{}\nstderr:\n{}",
             command,
@@ -1561,12 +1656,42 @@ fn run_amon_hen(
     query: String,
     prompt_commands: Vec<CommandTelemetry>,
 ) -> AmonHenResult {
+    run_amon_hen_with_progress(resolved, query, prompt_commands, None)
+}
+
+fn run_amon_hen_with_progress(
+    resolved: &ResolvedArgs,
+    query: String,
+    prompt_commands: Vec<CommandTelemetry>,
+    progress: Option<ProgressSink>,
+) -> AmonHenResult {
     let workflow = build_workflow(resolved);
     let mut previous_iteration = Vec::new();
     let mut final_members = Vec::new();
 
     for iteration in 1..=workflow.iterations {
-        final_members = run_iteration(resolved, &query, &workflow, iteration, &previous_iteration);
+        emit_runtime_event(
+            &progress,
+            resolved.raw.verbose,
+            progress_event(
+                None,
+                None,
+                ProgressStage::Start,
+                None,
+                format!(
+                    "[amon-hen] iteration {iteration}/{} started",
+                    workflow.iterations
+                ),
+            ),
+        );
+        final_members = run_iteration(
+            resolved,
+            &query,
+            &workflow,
+            iteration,
+            &previous_iteration,
+            progress.clone(),
+        );
         previous_iteration = final_members.clone();
     }
 
@@ -1606,6 +1731,7 @@ fn run_amon_hen(
             "summary",
             workflow.iterations,
             &workflow,
+            progress.clone(),
         );
         options.role = "summary".to_string();
         options.team_size = 0;
@@ -1654,6 +1780,7 @@ fn run_iteration(
     workflow: &Workflow,
     iteration: usize,
     previous_iteration: &[EngineResult],
+    progress: Option<ProgressSink>,
 ) -> Vec<EngineResult> {
     let ordered = execution_order(&resolved.members, workflow.planner.as_deref());
     if workflow.handoff {
@@ -1669,7 +1796,15 @@ fn run_iteration(
                 &results,
                 "",
             );
-            let options = engine_options(resolved, &member, prompt, &role, iteration, workflow);
+            let options = engine_options(
+                resolved,
+                &member,
+                prompt,
+                &role,
+                iteration,
+                workflow,
+                progress.clone(),
+            );
             results.push(run_engine(&member, options));
         }
         return results;
@@ -1693,7 +1828,15 @@ fn run_iteration(
             &[],
             "",
         );
-        let options = engine_options(resolved, planner_name, prompt, &role, iteration, workflow);
+        let options = engine_options(
+            resolved,
+            planner_name,
+            prompt,
+            &role,
+            iteration,
+            workflow,
+            progress.clone(),
+        );
         let result = run_engine(planner_name, options);
         if result.status == "ok" {
             plan_output = result.output.clone();
@@ -1710,6 +1853,7 @@ fn run_iteration(
     let workflow = Arc::new(workflow.clone());
     let previous_iteration = Arc::new(previous_iteration.to_vec());
     let plan_output = Arc::new(plan_output);
+    let progress = Arc::new(progress);
     for member in executors.clone() {
         let tx = tx.clone();
         let resolved = Arc::clone(&resolved);
@@ -1717,6 +1861,7 @@ fn run_iteration(
         let query = query.to_string();
         let previous_iteration = Arc::clone(&previous_iteration);
         let plan_output = Arc::clone(&plan_output);
+        let progress = Arc::clone(&progress);
         thread::spawn(move || {
             let role = role_for(&member, &workflow);
             let prompt = build_member_prompt(
@@ -1728,7 +1873,15 @@ fn run_iteration(
                 &[],
                 &plan_output,
             );
-            let options = engine_options(&resolved, &member, prompt, &role, iteration, &workflow);
+            let options = engine_options(
+                &resolved,
+                &member,
+                prompt,
+                &role,
+                iteration,
+                &workflow,
+                (*progress).clone(),
+            );
             let _ = tx.send(run_engine(&member, options));
         });
     }
@@ -1751,6 +1904,7 @@ fn engine_options(
     role: &str,
     iteration: usize,
     workflow: &Workflow,
+    progress: Option<ProgressSink>,
 ) -> EngineRunOptions {
     EngineRunOptions {
         prompt,
@@ -1766,7 +1920,8 @@ fn engine_options(
         total_iterations: workflow.iterations,
         team_size: *workflow.teams.get(member).unwrap_or(&DEFAULT_TEAM_SIZE),
         is_sub_agent: false,
-        live: resolved.raw.verbose,
+        live: resolved.raw.verbose || progress.is_some(),
+        progress,
     }
 }
 
@@ -1950,10 +2105,68 @@ fn build_team_lead_prompt(original: &str, sub_agents: &[EngineResult]) -> String
 }
 
 fn run_engine(name: &str, options: EngineRunOptions) -> EngineResult {
+    if let Some(result) = missing_engine_if_unavailable(name, &options) {
+        return result;
+    }
     if options.team_size > 0 && options.role != "summary" && !options.is_sub_agent {
         return run_engine_team(name, options);
     }
     run_engine_single(name, options, vec![])
+}
+
+fn missing_engine_if_unavailable(name: &str, options: &EngineRunOptions) -> Option<EngineResult> {
+    let bin = resolve_binary(name);
+    if command_available(&bin) {
+        return None;
+    }
+    let detail = format!(
+        "Provider CLI `{bin}` was not found in PATH. Install the {name} CLI on this machine or set {} to the executable path.",
+        Engine::parse(name)
+            .map(Engine::binary_env_var)
+            .unwrap_or("AMON_HEN_PROVIDER_BIN")
+    );
+    let message = format!("[amon-hen] {name} missing: {detail}");
+    emit_runtime_event(
+        &options.progress,
+        options.live && options.progress.is_none(),
+        progress_event(
+            Some(name),
+            Some(&options.role),
+            ProgressStage::Done,
+            Some("missing"),
+            message,
+        ),
+    );
+    Some(EngineResult {
+        name: name.to_string(),
+        bin: Some(bin.clone()),
+        status: "missing".to_string(),
+        duration_ms: 0,
+        detail: detail.clone(),
+        exit_code: None,
+        stdout: String::new(),
+        stderr: detail,
+        output: String::new(),
+        command: bin,
+        token_usage: token_usage(&options.prompt, ""),
+        tool_calls: vec![],
+        sub_agents: vec![],
+        role: options.role.clone(),
+        iteration: options.iteration,
+        total_iterations: options.total_iterations,
+        team_size: options.team_size,
+    })
+}
+
+fn command_available(command: &str) -> bool {
+    let path = Path::new(command);
+    if path.components().count() > 1 || path.is_absolute() {
+        return path.is_file();
+    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| dir.join(command).is_file())
 }
 
 fn run_engine_team(name: &str, options: EngineRunOptions) -> EngineResult {
@@ -1994,20 +2207,29 @@ fn run_engine_single(
     let started = Instant::now();
     let bin = resolve_binary(name);
     let live = options.live;
-    if options.live {
-        eprintln!(
-            "[amon-hen] start {} role={} iteration={}/{}{}",
-            name,
-            options.role,
-            options.iteration,
-            options.total_iterations,
-            if options.is_sub_agent {
-                " sub-agent"
-            } else {
-                ""
-            }
-        );
-    }
+    let start_message = format!(
+        "[amon-hen] start {} role={} iteration={}/{}{}",
+        name,
+        options.role,
+        options.iteration,
+        options.total_iterations,
+        if options.is_sub_agent {
+            " sub-agent"
+        } else {
+            ""
+        }
+    );
+    emit_runtime_event(
+        &options.progress,
+        live && options.progress.is_none(),
+        progress_event(
+            Some(name),
+            Some(&options.role),
+            ProgressStage::Start,
+            Some("running"),
+            start_message,
+        ),
+    );
     let result = match Engine::parse(name) {
         Some(Engine::Codex) => run_codex(&bin, &options),
         Some(Engine::Claude) => run_claude(&bin, &options),
@@ -2024,6 +2246,7 @@ fn run_engine_single(
             duration_ms: started.elapsed().as_millis(),
         },
     };
+    let engine_progress = options.progress.clone();
     let engine = finalize_engine(
         name,
         &bin,
@@ -2033,7 +2256,7 @@ fn run_engine_single(
         sub_agents,
     );
     if live {
-        eprintln!(
+        let done_message = format!(
             "[amon-hen] done {} role={} status={} elapsed={:.1}s tokens={} tools={} sub-agents={}",
             engine.name,
             engine.role,
@@ -2042,6 +2265,17 @@ fn run_engine_single(
             engine.token_usage.total,
             engine.tool_calls.len(),
             engine.sub_agents.len()
+        );
+        emit_runtime_event(
+            &engine_progress,
+            live && engine_progress.is_none(),
+            progress_event(
+                Some(&engine.name),
+                Some(&engine.role),
+                ProgressStage::Done,
+                Some(&engine.status),
+                done_message,
+            ),
         );
     }
     engine
@@ -2120,7 +2354,10 @@ fn run_codex(bin: &str, options: &EngineRunOptions) -> CommandResult {
         Some(&options.prompt),
         options.timeout_ms,
         HashMap::new(),
-        live_label("codex", options).as_deref(),
+        command_progress(
+            live_label("codex", options).as_deref(),
+            options.progress.clone(),
+        ),
     );
     if let Ok(output) = fs::read_to_string(output_path) {
         if !output.trim().is_empty() {
@@ -2186,7 +2423,10 @@ fn run_claude(bin: &str, options: &EngineRunOptions) -> CommandResult {
         Some(&options.prompt),
         options.timeout_ms,
         HashMap::new(),
-        live_label("claude", options).as_deref(),
+        command_progress(
+            live_label("claude", options).as_deref(),
+            options.progress.clone(),
+        ),
     )
 }
 
@@ -2238,7 +2478,10 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
         None,
         options.timeout_ms,
         envs,
-        live_label("gemini", options).as_deref(),
+        command_progress(
+            live_label("gemini", options).as_deref(),
+            options.progress.clone(),
+        ),
     )
 }
 
@@ -2249,6 +2492,18 @@ fn live_label(name: &str, options: &EngineRunOptions) -> Option<String> {
             name, options.role, options.iteration, options.total_iterations
         )
     })
+}
+
+fn provider_from_live_label(label: &str) -> Option<&str> {
+    let provider = label.split_whitespace().next()?;
+    ENGINES.contains(&provider).then_some(provider)
+}
+
+fn role_from_live_label(label: &str) -> Option<&str> {
+    if provider_from_live_label(label).is_some() {
+        return label.split_whitespace().nth(1);
+    }
+    None
 }
 
 fn prepare_gemini_settings(options: &EngineRunOptions) -> Option<TempSettings> {
@@ -2306,11 +2561,21 @@ fn run_command(
     stdin_text: Option<&str>,
     timeout_ms: u64,
     envs: HashMap<String, String>,
-    live_label: Option<&str>,
+    progress: Option<CommandProgress>,
 ) -> CommandResult {
     let started = Instant::now();
-    if let Some(label) = live_label {
-        eprintln!("[amon-hen] spawn {label}");
+    if let Some(progress) = &progress {
+        emit_runtime_event(
+            &progress.sink,
+            progress.sink.is_none(),
+            progress_event(
+                provider_from_live_label(&progress.label),
+                role_from_live_label(&progress.label),
+                ProgressStage::Spawn,
+                Some("running"),
+                format!("[amon-hen] spawn {}", progress.label),
+            ),
+        );
     }
     let mut child = match Command::new(command)
         .args(args)
@@ -2323,6 +2588,19 @@ fn run_command(
     {
         Ok(child) => child,
         Err(error) => {
+            if let Some(progress) = &progress {
+                emit_runtime_event(
+                    &progress.sink,
+                    progress.sink.is_none(),
+                    progress_event(
+                        provider_from_live_label(&progress.label),
+                        role_from_live_label(&progress.label),
+                        ProgressStage::Done,
+                        Some("missing"),
+                        format!("[amon-hen] spawn failed {}: {error}", progress.label),
+                    ),
+                );
+            }
             return CommandResult {
                 command: command.to_string(),
                 args: args.to_vec(),
@@ -2333,7 +2611,7 @@ fn run_command(
                 error: Some(error.to_string()),
                 timeout_ms,
                 duration_ms: started.elapsed().as_millis(),
-            }
+            };
         }
     };
 
@@ -2363,7 +2641,7 @@ fn run_command(
                     code = status.and_then(|status| status.code());
                     break;
                 }
-                if let Some(label) = live_label {
+                if let Some(progress) = &progress {
                     let elapsed = started.elapsed();
                     if elapsed >= next_live_tick {
                         let timeout_detail = if timeout_ms > 0 {
@@ -2371,10 +2649,21 @@ fn run_command(
                         } else {
                             String::new()
                         };
-                        eprintln!(
-                            "[amon-hen] running {label} for {}s{}",
-                            elapsed.as_secs(),
-                            timeout_detail
+                        emit_runtime_event(
+                            &progress.sink,
+                            progress.sink.is_none(),
+                            progress_event(
+                                provider_from_live_label(&progress.label),
+                                role_from_live_label(&progress.label),
+                                ProgressStage::Heartbeat,
+                                Some("running"),
+                                format!(
+                                    "[amon-hen] running {} for {}s{}",
+                                    progress.label,
+                                    elapsed.as_secs(),
+                                    timeout_detail
+                                ),
+                            ),
                         );
                         next_live_tick += Duration::from_secs(10);
                     }
@@ -3254,6 +3543,43 @@ mod tests {
         assert!(prompt.contains("Sub-agent handoffs"));
         assert!(prompt.contains("inspect parser"));
         assert!(prompt.contains("Original provider prompt"));
+    }
+
+    #[test]
+    fn missing_provider_preflight_avoids_team_fanout() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex",
+            "--team-work",
+            "5",
+            "hello",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let options = EngineRunOptions {
+            prompt: "hello".to_string(),
+            cwd: resolved.cwd.clone(),
+            timeout_ms: 1_000,
+            effort: None,
+            model: None,
+            permission: None,
+            auth: DEFAULT_AUTH_MODE.to_string(),
+            capability: provider_capability(&resolved, "codex"),
+            role: "planner".to_string(),
+            iteration: 1,
+            total_iterations: 1,
+            team_size: 5,
+            is_sub_agent: false,
+            live: false,
+            progress: None,
+        };
+
+        let result = run_engine("definitely-missing-amon-hen-test-bin", options);
+
+        assert_eq!(result.status, "missing");
+        assert!(result.sub_agents.is_empty());
+        assert!(result.detail.contains("not found in PATH"));
     }
 
     #[test]

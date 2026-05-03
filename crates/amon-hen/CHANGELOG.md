@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10
+
+- Reworked Studio runs into an in-dashboard async job loop instead of leaving alternate-screen mode and blocking the terminal.
+- Added structured runtime progress events so provider cards and the execution log update while context commands, providers, and sub-agents run.
+- Added provider CLI preflight so missing Codex/Claude/Gemini executables fail once with a clear diagnostic instead of spawning a wall of missing sub-agents.
+
 ## 0.1.9
 
 - Added live verbose runner progress so long provider/team runs print start, spawn, heartbeat, and completion lines instead of appearing frozen behind the banner.

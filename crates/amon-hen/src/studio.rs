@@ -14,6 +14,8 @@ use ratatui::widgets::{
     Block, BorderType, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
+use std::collections::HashMap;
+use std::sync::mpsc::Receiver;
 
 const MENU: [&str; 15] = [
     "Run / re-run",
@@ -83,7 +85,6 @@ enum InputMode {
     GeminiAdminPolicy,
 }
 
-#[derive(Debug, Clone)]
 struct StudioState {
     resolved: ResolvedArgs,
     prompt: String,
@@ -98,11 +99,26 @@ struct StudioState {
     last_linear_result: Option<String>,
     last_auth_result: Option<String>,
     last_capability_result: Option<String>,
+    run_job: Option<StudioRunJob>,
+    run_events: Vec<String>,
+    provider_status: HashMap<String, String>,
+    provider_detail: HashMap<String, String>,
     status: String,
     input_mode: Option<InputMode>,
     input_buffer: String,
     show_help: bool,
     exit_armed_until: Option<Instant>,
+}
+
+struct StudioRunJob {
+    rx: Receiver<StudioJobMessage>,
+    started: Instant,
+}
+
+enum StudioJobMessage {
+    Progress(ProgressEvent),
+    Finished(Box<AmonHenResult>),
+    Failed(String),
 }
 
 enum StudioAction {
@@ -164,6 +180,10 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         last_linear_result: None,
         last_auth_result: None,
         last_capability_result: None,
+        run_job: None,
+        run_events: Vec::new(),
+        provider_status: HashMap::new(),
+        provider_detail: HashMap::new(),
         status: "Ready".to_string(),
         input_mode: None,
         input_buffer: String::new(),
@@ -182,10 +202,27 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
     };
 
     loop {
+        drain_studio_job(&mut state);
         if let Err(error) = draw(&state) {
             drop(guard);
             eprintln!("{error}");
             return 1;
+        }
+        let poll_timeout = if state.run_job.is_some() {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_millis(250)
+        };
+        let has_event = match event::poll(poll_timeout) {
+            Ok(has_event) => has_event,
+            Err(error) => {
+                drop(guard);
+                eprintln!("Failed to poll Studio input: {error}");
+                return 1;
+            }
+        };
+        if !has_event {
+            continue;
         }
         let event = match event::read() {
             Ok(event) => event,
@@ -206,12 +243,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
             StudioAction::None => {}
             StudioAction::Quit => return 130,
             StudioAction::RunAmonHen => {
-                state.status =
-                    "Running outside the dashboard; live progress will stream below".to_string();
-                let _ = draw(&state);
-                run_external_action(&mut guard, "Running Amon Hen", || {
-                    run_amon_hen_from_studio(&mut state)
-                });
+                start_studio_run(&mut state);
             }
             StudioAction::SocialLogin => {
                 run_external_action(
@@ -294,26 +326,144 @@ fn run_external_action(guard: &mut TerminalGuard, label: &str, action: impl FnOn
     let _ = guard;
 }
 
-fn run_amon_hen_from_studio(state: &mut StudioState) {
-    state.status = "Running Amon Hen...".to_string();
+fn start_studio_run(state: &mut StudioState) {
+    if state.run_job.is_some() {
+        state.status = "Amon Hen is already running".to_string();
+        state.focus = Pane::Results;
+        return;
+    }
+
     let mut resolved = state.resolved.clone();
-    resolved.raw.verbose = true;
     resolved.prompt = state.prompt.clone();
-    let prompt_context = match build_prompt_context(&resolved) {
-        Ok(context) => context,
-        Err(error) => {
-            state.status = format!("Prompt context failed: {error}");
-            return;
-        }
-    };
-    let result = run_amon_hen(&resolved, prompt_context.prompt, prompt_context.commands);
-    state.status = if is_success(&result) {
-        "Amon Hen run completed".to_string()
-    } else {
-        "Amon Hen run needs attention".to_string()
-    };
-    state.last_result = Some(result);
+    resolved.raw.verbose = false;
+    let prompt = state.prompt.clone();
+    let (tx, rx) = mpsc::channel::<StudioJobMessage>();
+    let progress_tx = tx.clone();
+    let progress: ProgressSink = Arc::new(move |event| {
+        let _ = progress_tx.send(StudioJobMessage::Progress(event));
+    });
+
+    state.run_events.clear();
+    state.provider_status.clear();
+    state.provider_detail.clear();
+    state.last_result = None;
+    state.status = "Amon Hen running inside Studio".to_string();
     state.focus = Pane::Results;
+    push_run_event(state, "[studio] run queued");
+    for member in &state.resolved.members {
+        state
+            .provider_status
+            .insert(member.clone(), "queued".to_string());
+    }
+
+    thread::spawn(move || {
+        let mut thread_resolved = resolved;
+        thread_resolved.prompt = prompt;
+        let prompt_context =
+            match build_prompt_context_with_progress(&thread_resolved, Some(progress.clone())) {
+                Ok(context) => context,
+                Err(error) => {
+                    let _ = tx.send(StudioJobMessage::Failed(format!(
+                        "Prompt context failed: {error}"
+                    )));
+                    return;
+                }
+            };
+        let result = run_amon_hen_with_progress(
+            &thread_resolved,
+            prompt_context.prompt,
+            prompt_context.commands,
+            Some(progress),
+        );
+        let _ = tx.send(StudioJobMessage::Finished(Box::new(result)));
+    });
+
+    state.run_job = Some(StudioRunJob {
+        rx,
+        started: Instant::now(),
+    });
+}
+
+fn drain_studio_job(state: &mut StudioState) {
+    let mut messages = Vec::new();
+    let mut elapsed = None;
+    if let Some(job) = &state.run_job {
+        elapsed = Some(job.started.elapsed());
+        while let Ok(message) = job.rx.try_recv() {
+            messages.push(message);
+        }
+    }
+
+    let mut finished = false;
+    for message in messages {
+        match message {
+            StudioJobMessage::Progress(event) => apply_progress_event(state, event),
+            StudioJobMessage::Finished(result) => {
+                let result = *result;
+                state.status = if is_success(&result) {
+                    "Amon Hen run completed".to_string()
+                } else {
+                    "Amon Hen run needs attention".to_string()
+                };
+                for member in &result.members {
+                    state
+                        .provider_status
+                        .insert(member.name.clone(), member.status.clone());
+                    let detail = if member.detail.trim().is_empty() {
+                        format!(
+                            "{} in {:.1}s",
+                            member.command,
+                            member.duration_ms as f64 / 1000.0
+                        )
+                    } else {
+                        member.detail.clone()
+                    };
+                    state.provider_detail.insert(member.name.clone(), detail);
+                }
+                state.last_result = Some(result);
+                state.focus = Pane::Results;
+                push_run_event(state, "[studio] run finished");
+                finished = true;
+            }
+            StudioJobMessage::Failed(error) => {
+                state.status = error.clone();
+                push_run_event(state, format!("[studio] {error}"));
+                finished = true;
+            }
+        }
+    }
+
+    if finished {
+        state.run_job = None;
+    } else if let Some(elapsed) = elapsed {
+        state.status = format!("Amon Hen running ({:.1}s)", elapsed.as_secs_f64());
+    }
+}
+
+fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
+    push_run_event(state, sanitize_status_detail(&event.message));
+    if let Some(provider) = event.provider {
+        let status = event.status.unwrap_or_else(|| match event.stage {
+            ProgressStage::Done => "done".to_string(),
+            _ => "running".to_string(),
+        });
+        state.provider_status.insert(provider.clone(), status);
+        let role = event.role.unwrap_or_else(|| "agent".to_string());
+        state.provider_detail.insert(
+            provider,
+            format!("{} | {}", role, sanitize_status_detail(&event.message)),
+        );
+    }
+}
+
+fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
+    const MAX_RUN_EVENTS: usize = 500;
+    state.run_events.push(studio_clip(&line.into(), 240));
+    if state.run_events.len() > MAX_RUN_EVENTS {
+        let overflow = state.run_events.len() - MAX_RUN_EVENTS;
+        state.run_events.drain(0..overflow);
+    }
+    state.result_index = result_len(state).saturating_sub(1);
 }
 
 fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, String> {
@@ -1389,14 +1539,17 @@ fn render_provider_card(
     let role = result
         .map(|result| result.role.clone())
         .unwrap_or_else(|| role_for(member, &workflow));
-    let status = result.map_or("ready", |result| result.status.as_str());
+    let status = provider_status(state, member, result);
     let token_usage = result.map(|result| &result.token_usage);
     let total_tokens = token_usage.map_or(0, |usage| usage.total);
     let percent = ((total_tokens.saturating_mul(100)) / max_tokens).min(100) as u16;
     let tools = result.map_or(0, |result| result.tool_calls.len());
     let sub_agents = result.map_or(0, |result| result.sub_agents.len());
-    let command = result
-        .map(|result| studio_clip(&result.command, 64))
+    let command = state
+        .provider_detail
+        .get(member)
+        .map(|detail| studio_clip(detail, 64))
+        .or_else(|| result.map(|result| studio_clip(&result.command, 64)))
         .unwrap_or_else(|| "not run yet".to_string());
     let block = panel_block(member.to_ascii_uppercase(), state.focus == Pane::Agents)
         .border_style(Style::default().fg(color))
@@ -1480,7 +1633,7 @@ fn render_token_and_tools(frame: &mut Frame<'_>, area: Rect, state: &StudioState
             let result = provider_result(state, member);
             Row::new(vec![
                 member.to_string(),
-                result.map_or("ready".to_string(), |result| result.status.clone()),
+                provider_status(state, member, result).to_string(),
                 result.map_or("0".to_string(), |result| {
                     compact_count(result.token_usage.input)
                 }),
@@ -1782,10 +1935,24 @@ fn team_chip_value(workflow: &Workflow, width: u16) -> String {
 fn status_color(status: &str) -> Color {
     match status {
         "ok" => STUDIO_GREEN,
-        "err" | "timeout" | "missing" => STUDIO_RED,
+        "err" | "error" | "timeout" | "missing" => STUDIO_RED,
+        "running" | "queued" => STUDIO_GOLD,
         "ready" => STUDIO_MUTED,
         _ => STUDIO_GOLD,
     }
+}
+
+fn provider_status<'a>(
+    state: &'a StudioState,
+    member: &str,
+    result: Option<&'a EngineResult>,
+) -> &'a str {
+    state
+        .provider_status
+        .get(member)
+        .map(String::as_str)
+        .or_else(|| result.map(|result| result.status.as_str()))
+        .unwrap_or("ready")
 }
 
 fn provider_result<'a>(state: &'a StudioState, member: &str) -> Option<&'a EngineResult> {
@@ -2105,19 +2272,48 @@ fn linear_lines(state: &StudioState) -> Vec<String> {
 }
 
 fn result_lines(state: &StudioState) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !state.run_events.is_empty() {
+        lines.push("Live run log".to_string());
+        lines.extend(state.run_events.iter().cloned());
+        lines.push(String::new());
+    }
     let Some(result) = &state.last_result else {
-        return vec!["No run yet".to_string()];
+        if lines.is_empty() {
+            lines.push("No run yet".to_string());
+        }
+        return lines;
     };
-    let mut lines = result
-        .members
-        .iter()
-        .map(|member| {
-            format!(
-                "{} [{}] role:{} tokens:{}",
-                member.name, member.status, member.role, member.token_usage.total
-            )
-        })
-        .collect::<Vec<_>>();
+    lines.extend(result.members.iter().map(|member| {
+        format!(
+            "{} [{}] role:{} tokens:{} tools:{} sub-agents:{}",
+            member.name,
+            member.status,
+            member.role,
+            member.token_usage.total,
+            member.tool_calls.len(),
+            member.sub_agents.len()
+        )
+    }));
+    for member in &result.members {
+        if !member.detail.trim().is_empty() {
+            lines.push(format!("{} detail: {}", member.name, member.detail));
+        }
+        for sub_agent in &member.sub_agents {
+            lines.push(format!(
+                "  {} [{}] tokens:{} tools:{}{}",
+                sub_agent.role,
+                sub_agent.status,
+                sub_agent.token_usage.total,
+                sub_agent.tool_calls.len(),
+                if sub_agent.detail.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" detail: {}", studio_clip(&sub_agent.detail, 100))
+                }
+            ));
+        }
+    }
     for command in &result.prompt_commands {
         lines.push(format!(
             "cmd [{}] {}",
@@ -2251,11 +2447,12 @@ fn linear_len() -> usize {
 }
 
 fn result_len(state: &StudioState) -> usize {
-    state
+    let result_lines = state
         .last_result
         .as_ref()
         .map(|result| result.members.len() + 2)
-        .unwrap_or(1)
+        .unwrap_or(1);
+    result_lines + state.run_events.len()
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -2360,6 +2557,30 @@ mod tests {
 
         let second = handle_event(&mut state, ctrl_c()).unwrap();
         assert!(matches!(second, StudioAction::Quit));
+    }
+
+    #[test]
+    fn progress_events_update_dashboard_without_leaving_studio() {
+        let mut state = test_state("hello");
+        apply_progress_event(
+            &mut state,
+            progress_event(
+                Some("codex"),
+                Some("planner"),
+                ProgressStage::Spawn,
+                Some("running"),
+                "[amon-hen] spawn codex planner iteration 1/1",
+            ),
+        );
+
+        assert_eq!(
+            state.provider_status.get("codex").map(String::as_str),
+            Some("running")
+        );
+        let (rendered, _) = render_to_string(&state, 180, 46);
+        assert!(rendered.contains("Live run log"));
+        assert!(rendered.contains("spawn codex"));
+        assert!(rendered.contains("running"));
     }
 
     fn render_to_string(state: &StudioState, width: u16, height: u16) -> (String, bool) {
@@ -2487,6 +2708,10 @@ mod tests {
             last_linear_result: None,
             last_auth_result: None,
             last_capability_result: None,
+            run_job: None,
+            run_events: Vec::new(),
+            provider_status: HashMap::new(),
+            provider_detail: HashMap::new(),
             status: "Ready".to_string(),
             input_mode: None,
             input_buffer: String::new(),
