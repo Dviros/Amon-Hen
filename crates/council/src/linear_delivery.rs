@@ -3,6 +3,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const DEFAULT_LINEAR_ENDPOINT: &str = "https://api.linear.app/graphql";
 const DEFAULT_BRANCH_PREFIX: &str = "council/linear/";
@@ -239,6 +240,7 @@ struct DeliveryPaths {
 #[derive(Debug, Clone)]
 struct DeliveryEventContext {
     paths: DeliveryPaths,
+    event_lock: Arc<Mutex<()>>,
 }
 
 struct DeliveryRunContext<'a> {
@@ -250,6 +252,12 @@ struct DeliveryRunContext<'a> {
     completion_gate: &'a str,
 }
 
+struct IssueWorkItem {
+    issue: LinearIssue,
+    workspace: IssueWorkspace,
+    issue_state: IssueDeliveryState,
+}
+
 pub(super) fn get_linear_status(resolved: &ResolvedArgs) -> Result<LinearStatus, String> {
     let paths = resolve_delivery_paths(resolved);
     let auth = resolve_linear_authorization(resolved, true)?;
@@ -258,7 +266,7 @@ pub(super) fn get_linear_status(resolved: &ResolvedArgs) -> Result<LinearStatus,
     let mut auth_error = None;
 
     if let Some(auth) = auth.as_ref() {
-        match fetch_linear_viewer(auth) {
+        match fetch_linear_viewer(resolved, auth) {
             Ok(value) => viewer = value,
             Err(error) => auth_error = Some(error),
         }
@@ -267,7 +275,7 @@ pub(super) fn get_linear_status(resolved: &ResolvedArgs) -> Result<LinearStatus,
     Ok(LinearStatus {
         configured: auth.is_some(),
         auth_method: resolved.raw.linear_auth.clone(),
-        endpoint: linear_endpoint(),
+        endpoint: linear_endpoint(resolved),
         api_key_env: resolved.raw.linear_api_key_env.clone(),
         oauth_token_env: resolved.raw.linear_oauth_token_env.clone(),
         viewer,
@@ -350,8 +358,10 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
     let mut state = load_delivery_state(&paths.state_file);
     let workflow_policy = read_workflow_policy(resolved);
     let completion_gate = normalize_completion_gate(&resolved.raw.linear_completion_gate);
+    let watch = effective_linear_watch(resolved);
     let context = DeliveryEventContext {
         paths: paths.clone(),
+        event_lock: Arc::new(Mutex::new(())),
     };
     let mut poll_results = Vec::new();
     let mut poll_count = 0usize;
@@ -366,9 +376,11 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
             "issueIds": resolved.raw.linear_issue,
             "projects": resolved.raw.linear_project,
             "epics": resolved.raw.linear_epic,
-            "watch": resolved.raw.linear_watch,
+            "watch": watch,
             "untilComplete": resolved.raw.linear_until_complete,
             "completionGate": completion_gate,
+            "maxPolls": resolved.raw.linear_max_polls,
+            "maxConcurrency": resolved.raw.linear_max_concurrency,
             "stateFile": paths.state_file,
             "workspaceRoot": paths.workspace_root,
             "observabilityLog": paths.events_file
@@ -397,7 +409,19 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
             )?;
             break;
         }
-        if !resolved.raw.linear_watch {
+        if resolved
+            .raw
+            .linear_max_polls
+            .is_some_and(|max_polls| poll_count >= max_polls)
+        {
+            emit_event(
+                &context,
+                "delivery_max_polls_reached",
+                json!({ "poll": poll_count, "maxPolls": resolved.raw.linear_max_polls }),
+            )?;
+            break;
+        }
+        if !watch {
             break;
         }
         let poll_interval = if resolved.raw.linear_poll_interval == 0 {
@@ -423,7 +447,7 @@ pub(super) fn run_linear_delivery(resolved: &ResolvedArgs) -> Result<LinearDeliv
         duration_ms: started.elapsed().as_millis(),
         issue_count: issues.len(),
         phases,
-        watch: resolved.raw.linear_watch,
+        watch,
         poll_count,
         until_complete: resolved.raw.linear_until_complete,
         completion_gate,
@@ -458,7 +482,7 @@ fn run_linear_delivery_poll(
         state,
         &issues,
         context.events,
-        context.resolved.raw.linear_watch,
+        effective_linear_watch(context.resolved),
     )?;
 
     let max_attempts = effective_max_attempts(context.resolved);
@@ -473,18 +497,7 @@ fn run_linear_delivery_poll(
     }
     let skipped = issues.len().saturating_sub(eligible.len());
 
-    let mut issue_results = Vec::new();
-    for issue in eligible {
-        issue_results.push(run_linear_issue_delivery(
-            context.resolved,
-            context.auth,
-            context.phases,
-            state,
-            context.workflow_policy,
-            context.events,
-            issue,
-        )?);
-    }
+    let issue_results = run_linear_issue_batch(context, state, eligible)?;
     write_delivery_state(&context.events.paths.state_file, state)?;
 
     let complete =
@@ -510,6 +523,85 @@ fn run_linear_delivery_poll(
     })
 }
 
+fn run_linear_issue_batch(
+    context: &DeliveryRunContext<'_>,
+    state: &mut DeliveryState,
+    eligible: Vec<LinearIssue>,
+) -> Result<Vec<IssueDeliveryResult>, String> {
+    let concurrency = context.resolved.raw.linear_max_concurrency.max(1);
+    if concurrency == 1 {
+        let mut issue_results = Vec::new();
+        for issue in eligible {
+            issue_results.push(run_linear_issue_delivery(
+                context.resolved,
+                context.auth,
+                context.phases,
+                state,
+                context.workflow_policy,
+                context.events,
+                issue,
+            )?);
+        }
+        return Ok(issue_results);
+    }
+
+    let mut issue_results = Vec::new();
+    for chunk in eligible.chunks(concurrency) {
+        let mut items = Vec::with_capacity(chunk.len());
+        for issue in chunk.iter().cloned() {
+            items.push(start_linear_issue_delivery(
+                context.resolved,
+                state,
+                context.events,
+                issue,
+            )?);
+        }
+
+        let completed = thread::scope(|scope| {
+            let handles = items
+                .into_iter()
+                .map(|item| {
+                    let resolved = context.resolved.clone();
+                    let auth = context.auth.to_string();
+                    let phases = context.phases.to_vec();
+                    let workflow_policy = context.workflow_policy.to_string();
+                    let events = context.events.clone();
+                    scope.spawn(move || {
+                        finish_linear_issue_delivery(
+                            &resolved,
+                            &auth,
+                            &phases,
+                            &workflow_policy,
+                            &events,
+                            item,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .map_err(|_| "Linear issue worker panicked.".to_string())
+                        .and_then(|result| result)
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })?;
+
+        for (result, issue_state) in completed {
+            state
+                .issues
+                .insert(issue_state.identifier.clone(), issue_state);
+            write_delivery_state(&context.events.paths.state_file, state)?;
+            issue_results.push(result);
+        }
+    }
+
+    Ok(issue_results)
+}
+
 fn run_linear_issue_delivery(
     resolved: &ResolvedArgs,
     auth: &str,
@@ -519,7 +611,23 @@ fn run_linear_issue_delivery(
     context: &DeliveryEventContext,
     issue: LinearIssue,
 ) -> Result<IssueDeliveryResult, String> {
-    {
+    let item = start_linear_issue_delivery(resolved, state, context, issue)?;
+    let (result, issue_state) =
+        finish_linear_issue_delivery(resolved, auth, phases, workflow_policy, context, item)?;
+    state
+        .issues
+        .insert(issue_state.identifier.clone(), issue_state);
+    write_delivery_state(&context.paths.state_file, state)?;
+    Ok(result)
+}
+
+fn start_linear_issue_delivery(
+    resolved: &ResolvedArgs,
+    state: &mut DeliveryState,
+    context: &DeliveryEventContext,
+    issue: LinearIssue,
+) -> Result<IssueWorkItem, String> {
+    let attempt = {
         let issue_state = ensure_issue_state(state, &issue);
         issue_state.status = "running".to_string();
         issue_state.attempts += 1;
@@ -527,27 +635,54 @@ fn run_linear_issue_delivery(
         issue_state.next_retry_at = None;
         issue_state.last_error = None;
         issue_state.phases.clear();
-    }
+        issue_state.attempts
+    };
     write_delivery_state(&context.paths.state_file, state)?;
     emit_event(
         context,
         "delivery_issue_started",
-        json!({ "issue": issue, "attempt": state.issues[&issue.identifier].attempts }),
+        json!({ "issue": &issue, "attempt": attempt }),
     )?;
 
     let workspace = prepare_issue_workspace(resolved, &issue, &context.paths)?;
-    {
+    let issue_state = {
         let issue_state = ensure_issue_state(state, &issue);
         issue_state.workspace = Some(workspace.cwd.clone());
         issue_state.workspace_strategy = Some(workspace.strategy.clone());
         issue_state.branch = workspace.branch.clone();
-    }
+        issue_state.clone()
+    };
     write_delivery_state(&context.paths.state_file, state)?;
     emit_event(
         context,
         "delivery_workspace_prepared",
-        json!({ "issue": issue, "workspace": workspace }),
+        json!({ "issue": &issue, "workspace": &workspace }),
     )?;
+
+    Ok(IssueWorkItem {
+        issue,
+        workspace,
+        issue_state,
+    })
+}
+
+fn finish_linear_issue_delivery(
+    resolved: &ResolvedArgs,
+    auth: &str,
+    phases: &[String],
+    workflow_policy: &str,
+    context: &DeliveryEventContext,
+    mut item: IssueWorkItem,
+) -> Result<(IssueDeliveryResult, IssueDeliveryState), String> {
+    let issue = item.issue;
+    let workspace = item.workspace;
+    let issue_state = &mut item.issue_state;
+    let max_attempts = effective_max_attempts(resolved);
+    let retry_delay_ms = resolved
+        .raw
+        .linear_retry_base
+        .saturating_mul(1000)
+        .max(1000);
 
     let mut phase_results = Vec::new();
     let mut conversation = Vec::<(String, String)>::new();
@@ -556,7 +691,7 @@ fn run_linear_issue_delivery(
         emit_event(
             context,
             "delivery_phase_started",
-            json!({ "issue": issue, "phase": phase }),
+            json!({ "issue": &issue, "phase": phase }),
         )?;
         let mut phase_resolved = resolved.clone();
         phase_resolved.cwd = PathBuf::from(&workspace.cwd);
@@ -591,28 +726,24 @@ fn run_linear_issue_delivery(
                 summary.output.clone()
             },
         ));
-        {
-            let issue_state = ensure_issue_state(state, &issue);
-            issue_state.phases.push(PhaseState {
-                phase: phase.clone(),
-                status: summary.status.clone(),
-                summarizer: Some(summary.name.clone()),
-                completed_at: now_iso(),
+        issue_state.phases.push(PhaseState {
+            phase: phase.clone(),
+            status: summary.status.clone(),
+            summarizer: Some(summary.name.clone()),
+            completed_at: now_iso(),
+        });
+        if !success {
+            issue_state.last_error = Some(if summary.detail.trim().is_empty() {
+                format!("{phase} failed")
+            } else {
+                summary.detail.clone()
             });
-            if !success {
-                issue_state.last_error = Some(if summary.detail.trim().is_empty() {
-                    format!("{phase} failed")
-                } else {
-                    summary.detail.clone()
-                });
-            }
         }
-        write_delivery_state(&context.paths.state_file, state)?;
         emit_event(
             context,
             "delivery_phase_completed",
             json!({
-                "issue": issue,
+                "issue": &issue,
                 "phase": phase,
                 "success": success,
                 "summaryStatus": summary.status,
@@ -633,7 +764,7 @@ fn run_linear_issue_delivery(
                     emit_event(
                         context,
                         "delivery_media_attached",
-                        json!({ "issue": issue, "media": media }),
+                        json!({ "issue": &issue, "media": &media }),
                     )?;
                     media_attachments.push(media);
                 }
@@ -641,7 +772,7 @@ fn run_linear_issue_delivery(
                     emit_event(
                         context,
                         "delivery_media_attach_failed",
-                        json!({ "issue": issue, "media": media, "detail": error }),
+                        json!({ "issue": &issue, "media": media, "detail": error }),
                     )?;
                     media_attachments.push(MediaAttachmentResult {
                         source: media.clone(),
@@ -658,7 +789,13 @@ fn run_linear_issue_delivery(
         .iter()
         .all(|attachment| attachment.error.is_none());
     let completion = if issue_success && media_success {
-        evaluate_completion_gate(resolved, &issue, state, &workspace, &phase_results)
+        evaluate_completion_gate(
+            resolved,
+            &issue,
+            Some(issue_state),
+            &workspace,
+            &phase_results,
+        )
     } else {
         CompletionResult {
             success: false,
@@ -674,7 +811,7 @@ fn run_linear_issue_delivery(
     };
     let state_update = if completion.success && resolved.raw.linear_update_review_state {
         resolved.raw.linear_review_state.as_ref().map(
-            |review_state| match update_linear_issue_state(auth, &issue, review_state) {
+            |review_state| match update_linear_issue_state(resolved, auth, &issue, review_state) {
                 Ok(()) => StateUpdateResult {
                     state: review_state.clone(),
                     status: "ok".to_string(),
@@ -694,7 +831,7 @@ fn run_linear_issue_delivery(
         emit_event(
             context,
             "delivery_issue_state_update",
-            json!({ "issue": issue, "state": update.state, "status": update.status, "error": update.error }),
+            json!({ "issue": &issue, "state": update.state, "status": update.status, "error": update.error }),
         )?;
     }
     let mut comments = Vec::new();
@@ -707,12 +844,12 @@ fn run_linear_issue_delivery(
             &media_attachments,
             state_update.as_ref(),
         );
-        match create_linear_comment(auth, &issue.id, &body) {
+        match create_linear_comment(resolved, auth, &issue.id, &body) {
             Ok(comment) => {
                 emit_event(
                     context,
                     "delivery_comment_created",
-                    json!({ "issue": issue, "comment": comment }),
+                    json!({ "issue": &issue, "comment": &comment }),
                 )?;
                 comments.push(comment);
             }
@@ -720,7 +857,7 @@ fn run_linear_issue_delivery(
                 emit_event(
                     context,
                     "delivery_comment_failed",
-                    json!({ "issue": issue, "detail": error }),
+                    json!({ "issue": &issue, "detail": error }),
                 )?;
                 comments.push(LinearCommentResult {
                     id: None,
@@ -732,64 +869,54 @@ fn run_linear_issue_delivery(
         }
     }
 
-    {
-        let max_attempts = effective_max_attempts(resolved);
-        let issue_state = ensure_issue_state(state, &issue);
-        if completion.success {
-            issue_state.status = completion.status.clone();
-            issue_state.completed_at = Some(now_iso());
-            issue_state.completion_gate = Some(completion.gate.clone());
-            issue_state.completion_detail = Some(completion.detail.clone());
-            issue_state.pr_url = completion
-                .pr_url
-                .clone()
-                .or_else(|| issue_state.pr_url.clone());
-            match issue_state.status.as_str() {
-                "delivered" => issue_state.delivered_at = issue_state.completed_at.clone(),
-                "review_ready" => issue_state.review_ready_at = issue_state.completed_at.clone(),
-                "ci_passed" => issue_state.ci_passed_at = issue_state.completed_at.clone(),
-                _ => {}
-            }
-        } else {
-            issue_state.last_error = Some(completion.detail.clone());
-            schedule_retry(
-                issue_state,
-                max_attempts,
-                resolved
-                    .raw
-                    .linear_retry_base
-                    .saturating_mul(1000)
-                    .max(1000),
-            );
+    if completion.success {
+        issue_state.status = completion.status.clone();
+        issue_state.completed_at = Some(now_iso());
+        issue_state.completion_gate = Some(completion.gate.clone());
+        issue_state.completion_detail = Some(completion.detail.clone());
+        issue_state.pr_url = completion
+            .pr_url
+            .clone()
+            .or_else(|| issue_state.pr_url.clone());
+        match issue_state.status.as_str() {
+            "delivered" => issue_state.delivered_at = issue_state.completed_at.clone(),
+            "review_ready" => issue_state.review_ready_at = issue_state.completed_at.clone(),
+            "ci_passed" => issue_state.ci_passed_at = issue_state.completed_at.clone(),
+            _ => {}
         }
+    } else {
+        issue_state.last_error = Some(completion.detail.clone());
+        schedule_retry(issue_state, max_attempts, retry_delay_ms);
     }
-    write_delivery_state(&context.paths.state_file, state)?;
-    let issue_state = state.issues[&issue.identifier].clone();
+    let result_issue_state = issue_state.clone();
     emit_event(
         context,
         "delivery_issue_completed",
         json!({
-            "issue": issue,
+            "issue": &issue,
             "success": completion.success,
-            "status": issue_state.status,
-            "attempts": issue_state.attempts,
-            "nextRetryAt": issue_state.next_retry_at
+            "status": result_issue_state.status,
+            "attempts": result_issue_state.attempts,
+            "nextRetryAt": result_issue_state.next_retry_at
         }),
     )?;
 
-    Ok(IssueDeliveryResult {
-        issue,
-        success: completion.success,
-        status: issue_state.status,
-        workspace,
-        attempts: issue_state.attempts,
-        next_retry_at: issue_state.next_retry_at,
-        completion,
-        phases: phase_results,
-        media_attachments,
-        comments,
-        state_update,
-    })
+    Ok((
+        IssueDeliveryResult {
+            issue,
+            success: completion.success,
+            status: result_issue_state.status.clone(),
+            workspace,
+            attempts: result_issue_state.attempts,
+            next_retry_at: result_issue_state.next_retry_at.clone(),
+            completion,
+            phases: phase_results,
+            media_attachments,
+            comments,
+            state_update,
+        },
+        result_issue_state,
+    ))
 }
 
 pub(super) fn render_linear_delivery_result(result: &LinearDeliveryResult) -> String {
@@ -873,8 +1000,12 @@ pub(super) fn render_linear_delivery_result(result: &LinearDeliveryResult) -> St
     lines.join("\n")
 }
 
-fn fetch_linear_viewer(auth: &str) -> Result<Option<LinearViewer>, String> {
+fn fetch_linear_viewer(
+    resolved: &ResolvedArgs,
+    auth: &str,
+) -> Result<Option<LinearViewer>, String> {
     let data = linear_graphql(
+        resolved,
         auth,
         "query CouncilLinearViewer { viewer { id name email } }",
         json!({}),
@@ -889,6 +1020,7 @@ fn fetch_linear_issues(resolved: &ResolvedArgs, auth: &str) -> Result<Vec<Linear
         let mut issues = Vec::new();
         for id in &resolved.raw.linear_issue {
             let data = linear_graphql(
+                resolved,
                 auth,
                 &format!(
                     "query CouncilLinearIssue($id: String!) {{ issue(id: $id) {{ {} }} }}",
@@ -912,6 +1044,7 @@ fn fetch_linear_issues(resolved: &ResolvedArgs, auth: &str) -> Result<Vec<Linear
             "filter": build_issue_filter(resolved)
         });
         let data = linear_graphql(
+            resolved,
             auth,
             &format!(
                 "query CouncilLinearIssues($first: Int!, $after: String, $filter: IssueFilter) {{ issues(first: $first, after: $after, filter: $filter) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }} }}",
@@ -940,13 +1073,15 @@ fn fetch_linear_issues(resolved: &ResolvedArgs, auth: &str) -> Result<Vec<Linear
     Ok(all)
 }
 
-fn linear_graphql(auth: &str, query: &str, variables: Value) -> Result<Value, String> {
-    let client = Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|error| format!("Failed to create Linear HTTP client: {error}"))?;
+fn linear_graphql(
+    resolved: &ResolvedArgs,
+    auth: &str,
+    query: &str,
+    variables: Value,
+) -> Result<Value, String> {
+    let client = linear_client()?;
     let response = client
-        .post(linear_endpoint())
+        .post(linear_endpoint(resolved))
         .header("authorization", auth)
         .json(&json!({ "query": query, "variables": variables }))
         .send()
@@ -976,6 +1111,20 @@ fn linear_graphql(auth: &str, query: &str, variables: Value) -> Result<Value, St
         }
     }
     Ok(payload.get("data").cloned().unwrap_or(Value::Null))
+}
+
+fn linear_client() -> Result<Client, String> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .map_err(|error| format!("Failed to create Linear HTTP client: {error}"))
+        })
+        .as_ref()
+        .cloned()
+        .map_err(Clone::clone)
 }
 
 fn issue_fields() -> &'static str {
@@ -1144,7 +1293,7 @@ fn attach_linear_media(
     let (url, subtitle) = if is_remote {
         (source.to_string(), "Attached by Council".to_string())
     } else {
-        let uploaded = upload_linear_file(auth, &workspace.cwd, source, issue)?;
+        let uploaded = upload_linear_file(resolved, auth, &workspace.cwd, source, issue)?;
         (
             uploaded.asset_url,
             format!("Uploaded {}", uploaded.filename),
@@ -1156,7 +1305,7 @@ fn attach_linear_media(
         .as_ref()
         .map(|prefix| format!("{prefix}: {}", media_title(source)))
         .unwrap_or_else(|| media_title(source));
-    let attachment = create_linear_attachment(auth, &issue.id, &title, &url, &subtitle)?;
+    let attachment = create_linear_attachment(resolved, auth, &issue.id, &title, &url, &subtitle)?;
     Ok(MediaAttachmentResult {
         source: source.to_string(),
         url: Some(url),
@@ -1178,6 +1327,7 @@ struct UploadedFile {
 }
 
 fn upload_linear_file(
+    resolved: &ResolvedArgs,
     auth: &str,
     cwd: &str,
     file_path: &str,
@@ -1199,6 +1349,7 @@ fn upload_linear_file(
         .to_string();
     let content_type = infer_content_type(&filename);
     let data = linear_graphql(
+        resolved,
         auth,
         "mutation CouncilLinearFileUpload($contentType: String!, $filename: String!, $size: Int!, $makePublic: Boolean, $metaData: JSON) { fileUpload(contentType: $contentType, filename: $filename, size: $size, makePublic: $makePublic, metaData: $metaData) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
         json!({
@@ -1267,6 +1418,7 @@ fn upload_linear_file(
 }
 
 fn create_linear_attachment(
+    resolved: &ResolvedArgs,
     auth: &str,
     issue_id: &str,
     title: &str,
@@ -1274,6 +1426,7 @@ fn create_linear_attachment(
     subtitle: &str,
 ) -> Result<Value, String> {
     let data = linear_graphql(
+        resolved,
         auth,
         "mutation CouncilLinearAttachmentCreate($input: AttachmentCreateInput!) { attachmentCreate(input: $input) { success attachment { id title subtitle url } } }",
         json!({
@@ -1303,11 +1456,13 @@ fn create_linear_attachment(
 }
 
 fn create_linear_comment(
+    resolved: &ResolvedArgs,
     auth: &str,
     issue_id: &str,
     body: &str,
 ) -> Result<LinearCommentResult, String> {
     let data = linear_graphql(
+        resolved,
         auth,
         "mutation CouncilLinearCommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id url } } }",
         json!({
@@ -1343,6 +1498,7 @@ fn create_linear_comment(
 }
 
 fn update_linear_issue_state(
+    resolved: &ResolvedArgs,
     auth: &str,
     issue: &LinearIssue,
     review_state: &str,
@@ -1357,6 +1513,7 @@ fn update_linear_issue_state(
         });
     }
     let data = linear_graphql(
+        resolved,
         auth,
         "query CouncilLinearWorkflowState($filter: WorkflowStateFilter) { workflowStates(first: 10, filter: $filter) { nodes { id name } } }",
         json!({ "filter": filter }),
@@ -1369,6 +1526,7 @@ fn update_linear_issue_state(
         .and_then(Value::as_str)
         .ok_or_else(|| format!("Could not find Linear workflow state `{review_state}`."))?;
     let updated = linear_graphql(
+        resolved,
         auth,
         "mutation CouncilLinearIssueState($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id } } }",
         json!({
@@ -1443,17 +1601,12 @@ fn build_delivery_comment_body(
 fn evaluate_completion_gate(
     resolved: &ResolvedArgs,
     issue: &LinearIssue,
-    state: &DeliveryState,
+    issue_state: Option<&IssueDeliveryState>,
     workspace: &IssueWorkspace,
     phases: &[PhaseDeliveryResult],
 ) -> CompletionResult {
     let gate = normalize_completion_gate(&resolved.raw.linear_completion_gate);
-    let pr_url = collect_pr_url(
-        issue,
-        state.issues.get(&issue.identifier),
-        workspace,
-        phases,
-    );
+    let pr_url = collect_pr_url(issue, issue_state, workspace, phases);
     if gate == "delivered" {
         return CompletionResult {
             success: true,
@@ -2022,6 +2175,10 @@ fn emit_event(
     event_type: &str,
     payload: Value,
 ) -> Result<(), String> {
+    let _guard = context
+        .event_lock
+        .lock()
+        .map_err(|_| "Linear observability lock was poisoned.".to_string())?;
     let event = json!({
         "type": event_type,
         "at": now_iso(),
@@ -2103,13 +2260,22 @@ fn render_delivery_progress_event(event_type: &str, payload: &Value) -> String {
         ),
         "delivery_issue_completed" => "[delivery] issue completed".to_string(),
         "delivery_target_completed" => "[delivery] target completed".to_string(),
+        "delivery_max_polls_reached" => format!(
+            "[delivery] max polls reached ({})",
+            payload.get("poll").and_then(Value::as_u64).unwrap_or(0)
+        ),
         "delivery_completed" => "[delivery] linear completed".to_string(),
         _ => format!("[delivery] {event_type}"),
     }
 }
 
 fn read_workflow_policy(resolved: &ResolvedArgs) -> String {
-    let path = resolved.cwd.join(DEFAULT_WORKFLOW_FILE);
+    let path = resolved
+        .raw
+        .linear_workflow_file
+        .as_ref()
+        .map(|path| absolutize(&resolved.cwd, path))
+        .unwrap_or_else(|| resolved.cwd.join(DEFAULT_WORKFLOW_FILE));
     fs::read_to_string(path)
         .map(|text| text.trim().to_string())
         .unwrap_or_default()
@@ -2272,6 +2438,10 @@ fn effective_max_attempts(resolved: &ResolvedArgs) -> usize {
     }
 }
 
+fn effective_linear_watch(resolved: &ResolvedArgs) -> bool {
+    resolved.raw.linear_watch || resolved.raw.linear_until_complete
+}
+
 fn normalize_completion_gate(value: &str) -> String {
     match value {
         "delivered" | "human-review" | "ci-success" | "review-or-ci" => value.to_string(),
@@ -2334,10 +2504,19 @@ fn safe_workspace_name(value: &str) -> String {
     name
 }
 
-fn linear_endpoint() -> String {
-    std::env::var("LINEAR_GRAPHQL_ENDPOINT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
+fn linear_endpoint(resolved: &ResolvedArgs) -> String {
+    resolved
+        .raw
+        .linear_endpoint
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("LINEAR_GRAPHQL_ENDPOINT")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_LINEAR_ENDPOINT.to_string())
 }
 

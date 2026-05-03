@@ -143,6 +143,9 @@ council \
   --linear-project ENG \
   --linear-until-complete \
   --linear-completion-gate review-or-ci \
+  --linear-max-polls 12 \
+  --linear-max-concurrency 2 \
+  --linear-workflow-file docs/linear-workflow.md \
   --linear-limit 4 \
   --linear-max-attempts 3 \
   --members codex,claude,gemini \

@@ -98,6 +98,8 @@ pub struct CliArgs {
 
     #[arg(long = "no-banner", action = ArgAction::SetTrue)]
     no_banner: bool,
+    #[arg(long = "banner", hide = true, action = ArgAction::SetTrue)]
+    banner: bool,
 
     #[arg(short = 'q', long = "quiet", alias = "summary-only", action = ArgAction::SetTrue)]
     summary_only: bool,
@@ -208,6 +210,8 @@ pub struct CliArgs {
     auth_device_code: bool,
     #[arg(long = "no-auth-open-browser", action = ArgAction::SetTrue)]
     no_auth_open_browser: bool,
+    #[arg(long = "auth-open-browser", hide = true, action = ArgAction::SetTrue)]
+    auth_open_browser: bool,
     #[arg(long = "auth-timeout", default_value_t = 300)]
     auth_timeout: u64,
     #[arg(long = "claude-login-mode", default_value = "claudeai")]
@@ -263,6 +267,8 @@ pub struct CliArgs {
     linear_assignee: Option<String>,
     #[arg(long = "linear-limit", default_value_t = 3)]
     linear_limit: usize,
+    #[arg(long = "linear-endpoint")]
+    linear_endpoint: Option<String>,
     #[arg(long = "linear-auth", default_value = "api-key")]
     linear_auth: String,
     #[arg(long = "linear-api-key-env", default_value = "LINEAR_API_KEY")]
@@ -279,6 +285,10 @@ pub struct CliArgs {
     linear_ci_poll_interval: u64,
     #[arg(long = "linear-poll-interval", default_value_t = 60)]
     linear_poll_interval: u64,
+    #[arg(long = "linear-max-polls")]
+    linear_max_polls: Option<usize>,
+    #[arg(long = "linear-max-concurrency", default_value_t = 1)]
+    linear_max_concurrency: usize,
     #[arg(long = "linear-max-attempts", default_value_t = 3)]
     linear_max_attempts: usize,
     #[arg(long = "linear-retry-base", default_value_t = 60)]
@@ -291,6 +301,8 @@ pub struct CliArgs {
     linear_workspace_root: Option<PathBuf>,
     #[arg(long = "linear-observability-dir")]
     linear_observability_dir: Option<PathBuf>,
+    #[arg(long = "linear-workflow-file")]
+    linear_workflow_file: Option<PathBuf>,
     #[arg(long = "linear-attach-media", value_delimiter = ',', action = ArgAction::Append)]
     linear_attach_media: Vec<String>,
     #[arg(long = "linear-attachment-title")]
@@ -590,10 +602,7 @@ where
         }
     }
 
-    if resolved.raw.deliver_linear
-        || resolved.raw.linear_until_complete
-        || resolved.raw.linear_watch
-    {
+    if linear_delivery_requested(&resolved.raw) {
         match linear_delivery::run_linear_delivery(&resolved) {
             Ok(result) => {
                 println!(
@@ -699,6 +708,45 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
         &raw.gemini_capabilities,
         &[CAPABILITY_INHERIT, CAPABILITY_OVERRIDE],
     )?;
+    validate_choice("--linear-auth", &raw.linear_auth, &["api-key", "oauth"])?;
+    validate_choice(
+        "--linear-completion-gate",
+        &raw.linear_completion_gate,
+        &["delivered", "human-review", "ci-success", "review-or-ci"],
+    )?;
+    validate_choice(
+        "--linear-workspace-strategy",
+        &raw.linear_workspace_strategy,
+        &["worktree", "copy", "none"],
+    )?;
+    if raw.linear_limit == 0 {
+        return Err("--linear-limit requires a positive integer.".to_string());
+    }
+    if raw.linear_max_concurrency == 0 {
+        return Err("--linear-max-concurrency requires a positive integer.".to_string());
+    }
+    if raw.linear_max_polls == Some(0) {
+        return Err("--linear-max-polls requires a positive integer.".to_string());
+    }
+    if raw
+        .linear_endpoint
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err("--linear-endpoint requires a non-empty value.".to_string());
+    }
+    for phase in raw
+        .delivery_phases
+        .iter()
+        .map(|phase| phase.trim())
+        .filter(|phase| !phase.is_empty())
+    {
+        validate_choice(
+            "--delivery-phases",
+            phase,
+            &["plan", "implement", "verify", "ship"],
+        )?;
+    }
 
     let mut prompt = raw.prompt.join(" ");
     if prompt.trim().is_empty() && !io::stdin().is_terminal() {
@@ -2728,6 +2776,19 @@ fn should_show_banner(raw: &CliArgs) -> bool {
     !raw.no_banner && !raw.headless && !raw.json && !raw.json_stream && !raw.plain
 }
 
+fn linear_delivery_requested(raw: &CliArgs) -> bool {
+    raw.deliver_linear
+        || raw.linear_until_complete
+        || raw.linear_watch
+        || !raw.linear_issue.is_empty()
+        || raw
+            .linear_query
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || !raw.linear_project.is_empty()
+        || !raw.linear_epic.is_empty()
+}
+
 fn render_banner() -> &'static str {
     "  ____   ___  _   _ _   _  ____ ___ _     \n / ___| / _ \\| | | | \\ | |/ ___|_ _| |    \n| |    | | | | | | |  \\| | |    | || |    \n| |___ | |_| | |_| | |\\  | |___ | || |___ \n \\____| \\___/ \\___/|_| \\_|\\____|___|_____|"
 }
@@ -2848,6 +2909,57 @@ mod tests {
         assert_eq!(
             resolved.raw.gemini_allowed_mcp_servers,
             vec!["linear", "github"]
+        );
+    }
+
+    #[test]
+    fn parses_legacy_npm_linear_flags_in_rust() {
+        let args = CliArgs::try_parse_from([
+            "council",
+            "--banner",
+            "--auth-open-browser",
+            "--members",
+            "codex,claude,gemini",
+            "--linear-project",
+            "ENG",
+            "--linear-endpoint",
+            "https://linear.example/graphql",
+            "--linear-auth",
+            "oauth",
+            "--linear-max-polls",
+            "2",
+            "--linear-max-concurrency",
+            "3",
+            "--linear-workflow-file",
+            "docs/linear-workflow.md",
+            "--linear-workspace-strategy",
+            "copy",
+            "--linear-completion-gate",
+            "review-or-ci",
+            "--delivery-phases",
+            "plan,implement,verify,ship",
+            "deliver it",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+
+        assert!(linear_delivery_requested(&resolved.raw));
+        assert_eq!(
+            resolved.raw.linear_endpoint.as_deref(),
+            Some("https://linear.example/graphql")
+        );
+        assert_eq!(resolved.raw.linear_auth, "oauth");
+        assert_eq!(resolved.raw.linear_max_polls, Some(2));
+        assert_eq!(resolved.raw.linear_max_concurrency, 3);
+        assert_eq!(
+            resolved.raw.linear_workflow_file.as_deref(),
+            Some(Path::new("docs/linear-workflow.md"))
+        );
+        assert_eq!(resolved.raw.linear_workspace_strategy, "copy");
+        assert_eq!(resolved.raw.linear_completion_gate, "review-or-ci");
+        assert_eq!(
+            resolved.raw.delivery_phases,
+            vec!["plan", "implement", "verify", "ship"]
         );
     }
 

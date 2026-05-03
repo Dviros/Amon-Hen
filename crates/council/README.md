@@ -166,6 +166,9 @@ council \
   --linear-project ENG \
   --linear-until-complete \
   --linear-completion-gate review-or-ci \
+  --linear-max-polls 12 \
+  --linear-max-concurrency 2 \
+  --linear-workflow-file docs/linear-workflow.md \
   --linear-limit 4 \
   --linear-max-attempts 3 \
   --members codex,claude,gemini \
@@ -174,7 +177,7 @@ council \
   --team-work 2
 ```
 
-Target epics, teams, states, assignees, labels, or explicit issues when you need a tighter queue. The delivery worker creates isolated issue workspaces, runs planner/executor/verification phases, persists retry and reconciliation state, comments progress back to Linear, attaches generated media or command output, and stops only at the configured human-review or CI gate.
+Target epics, teams, states, assignees, labels, or explicit issues when you need a tighter queue. The delivery worker creates isolated issue workspaces, runs planner/executor/verification phases with bounded issue concurrency, persists retry and reconciliation state, comments progress back to Linear, attaches generated media or command output, and stops only at the configured human-review or CI gate.
 
 ## Output And Telemetry
 
