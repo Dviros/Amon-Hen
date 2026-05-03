@@ -6,7 +6,7 @@ use serde_json::{json, Map};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const DEFAULT_LINEAR_ENDPOINT: &str = "https://api.linear.app/graphql";
-const DEFAULT_BRANCH_PREFIX: &str = "council/linear/";
+const DEFAULT_BRANCH_PREFIX: &str = "amon-hen/linear/";
 const DEFAULT_WORKFLOW_FILE: &str = "WORKFLOW.md";
 const DEFAULT_MAX_ATTEMPTS: usize = 3;
 const DEFAULT_POLL_INTERVAL_MS: u64 = 60_000;
@@ -704,7 +704,7 @@ fn finish_linear_issue_delivery(
         phase_resolved.prompt =
             build_delivery_phase_prompt(phase, &issue, resolved, &conversation, workflow_policy);
         let prompt_context = build_prompt_context(&phase_resolved)?;
-        let result = run_council(
+        let result = run_amon_hen(
             &phase_resolved,
             prompt_context.prompt,
             prompt_context.commands,
@@ -1007,7 +1007,7 @@ fn fetch_linear_viewer(
     let data = linear_graphql(
         resolved,
         auth,
-        "query CouncilLinearViewer { viewer { id name email } }",
+        "query AmonHenLinearViewer { viewer { id name email } }",
         json!({}),
     )?;
     Ok(data
@@ -1023,7 +1023,7 @@ fn fetch_linear_issues(resolved: &ResolvedArgs, auth: &str) -> Result<Vec<Linear
                 resolved,
                 auth,
                 &format!(
-                    "query CouncilLinearIssue($id: String!) {{ issue(id: $id) {{ {} }} }}",
+                    "query AmonHenLinearIssue($id: String!) {{ issue(id: $id) {{ {} }} }}",
                     issue_fields()
                 ),
                 json!({ "id": id }),
@@ -1047,7 +1047,7 @@ fn fetch_linear_issues(resolved: &ResolvedArgs, auth: &str) -> Result<Vec<Linear
             resolved,
             auth,
             &format!(
-                "query CouncilLinearIssues($first: Int!, $after: String, $filter: IssueFilter) {{ issues(first: $first, after: $after, filter: $filter) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }} }}",
+                "query AmonHenLinearIssues($first: Int!, $after: String, $filter: IssueFilter) {{ issues(first: $first, after: $after, filter: $filter) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }} }}",
                 issue_fields()
             ),
             variables,
@@ -1291,7 +1291,7 @@ fn attach_linear_media(
     }
     let is_remote = source.starts_with("http://") || source.starts_with("https://");
     let (url, subtitle) = if is_remote {
-        (source.to_string(), "Attached by Council".to_string())
+        (source.to_string(), "Attached by Amon Hen".to_string())
     } else {
         let uploaded = upload_linear_file(resolved, auth, &workspace.cwd, source, issue)?;
         (
@@ -1351,13 +1351,13 @@ fn upload_linear_file(
     let data = linear_graphql(
         resolved,
         auth,
-        "mutation CouncilLinearFileUpload($contentType: String!, $filename: String!, $size: Int!, $makePublic: Boolean, $metaData: JSON) { fileUpload(contentType: $contentType, filename: $filename, size: $size, makePublic: $makePublic, metaData: $metaData) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
+        "mutation AmonHenLinearFileUpload($contentType: String!, $filename: String!, $size: Int!, $makePublic: Boolean, $metaData: JSON) { fileUpload(contentType: $contentType, filename: $filename, size: $size, makePublic: $makePublic, metaData: $metaData) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
         json!({
             "contentType": content_type,
             "filename": filename,
             "size": metadata.len() as i64,
             "makePublic": false,
-            "metaData": { "issueId": issue.id, "source": "council" }
+            "metaData": { "issueId": issue.id, "source": "amon-hen" }
         }),
     )?;
     let upload = data
@@ -1428,14 +1428,14 @@ fn create_linear_attachment(
     let data = linear_graphql(
         resolved,
         auth,
-        "mutation CouncilLinearAttachmentCreate($input: AttachmentCreateInput!) { attachmentCreate(input: $input) { success attachment { id title subtitle url } } }",
+        "mutation AmonHenLinearAttachmentCreate($input: AttachmentCreateInput!) { attachmentCreate(input: $input) { success attachment { id title subtitle url } } }",
         json!({
             "input": {
                 "issueId": issue_id,
                 "title": title,
                 "url": url,
                 "subtitle": subtitle,
-                "metadata": { "source": "council" }
+                "metadata": { "source": "amon-hen" }
             }
         }),
     )?;
@@ -1464,7 +1464,7 @@ fn create_linear_comment(
     let data = linear_graphql(
         resolved,
         auth,
-        "mutation CouncilLinearCommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id url } } }",
+        "mutation AmonHenLinearCommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id url } } }",
         json!({
             "input": {
                 "issueId": issue_id,
@@ -1515,7 +1515,7 @@ fn update_linear_issue_state(
     let data = linear_graphql(
         resolved,
         auth,
-        "query CouncilLinearWorkflowState($filter: WorkflowStateFilter) { workflowStates(first: 10, filter: $filter) { nodes { id name } } }",
+        "query AmonHenLinearWorkflowState($filter: WorkflowStateFilter) { workflowStates(first: 10, filter: $filter) { nodes { id name } } }",
         json!({ "filter": filter }),
     )?;
     let state_id = data
@@ -1528,7 +1528,7 @@ fn update_linear_issue_state(
     let updated = linear_graphql(
         resolved,
         auth,
-        "mutation CouncilLinearIssueState($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id } } }",
+        "mutation AmonHenLinearIssueState($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id } } }",
         json!({
             "id": issue.id,
             "input": { "stateId": state_id }
@@ -1554,7 +1554,7 @@ fn build_delivery_comment_body(
     state_update: Option<&StateUpdateResult>,
 ) -> String {
     let mut lines = vec![
-        format!("Council delivery update for {}", issue.identifier),
+        format!("Amon Hen delivery update for {}", issue.identifier),
         String::new(),
         format!("Status: {}", completion.status),
         format!("Gate: {}", completion.gate),
@@ -1868,7 +1868,7 @@ fn copy_workspace(from: &Path, to: &Path) -> Result<(), String> {
         let name_str = name.to_string_lossy();
         if matches!(
             name_str.as_ref(),
-            ".git" | ".council" | "node_modules" | "dist" | "target"
+            ".git" | ".amon-hen" | "node_modules" | "dist" | "target"
         ) {
             continue;
         }
@@ -2060,25 +2060,25 @@ fn has_scoped_linear_target(resolved: &ResolvedArgs) -> bool {
 }
 
 fn resolve_delivery_paths(resolved: &ResolvedArgs) -> DeliveryPaths {
-    let council_dir = resolved.cwd.join(".council");
+    let amon_hen_dir = resolved.cwd.join(".amon-hen");
     let state_file = resolved
         .raw
         .linear_state_file
         .as_ref()
         .map(|path| absolutize(&resolved.cwd, path))
-        .unwrap_or_else(|| council_dir.join("linear-delivery-state.json"));
+        .unwrap_or_else(|| amon_hen_dir.join("linear-delivery-state.json"));
     let workspace_root = resolved
         .raw
         .linear_workspace_root
         .as_ref()
         .map(|path| absolutize(&resolved.cwd, path))
-        .unwrap_or_else(|| council_dir.join("linear-workspaces"));
+        .unwrap_or_else(|| amon_hen_dir.join("linear-workspaces"));
     let observability_dir = resolved
         .raw
         .linear_observability_dir
         .as_ref()
         .map(|path| absolutize(&resolved.cwd, path))
-        .unwrap_or_else(|| council_dir.join("linear-observability"));
+        .unwrap_or_else(|| amon_hen_dir.join("linear-observability"));
     DeliveryPaths {
         state_file,
         workspace_root,
@@ -2356,7 +2356,7 @@ fn build_delivery_phase_prompt(
     if !workflow_policy.trim().is_empty() {
         lines.extend([
             String::new(),
-            "Repository workflow policy:".to_string(),
+            "Project workflow policy:".to_string(),
             workflow_policy.to_string(),
         ]);
     }
@@ -2376,7 +2376,7 @@ fn build_delivery_phase_prompt(
     }
     lines.extend([
         String::new(),
-        format!("Council phase: {phase}."),
+        format!("Amon Hen phase: {phase}."),
         format!(
             "Completion gate: {}.",
             normalize_completion_gate(&resolved.raw.linear_completion_gate)

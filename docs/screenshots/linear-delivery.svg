@@ -52,7 +52,7 @@
   <g transform="translate(180 438)">
     <rect width="920" height="170" rx="14" fill="#101312" stroke="#10251f" stroke-width="2"/>
     <text x="28" y="44" fill="#d8b45f" font-size="17" font-weight="900" class="mono">delivery console</text>
-    <text x="28" y="84" fill="#e8ede4" font-size="18" class="mono">$ council --deliver-linear --linear-project ENG --linear-completion-gate review-or-ci</text>
+    <text x="28" y="84" fill="#e8ede4" font-size="18" class="mono">$ amon-hen --deliver-linear --linear-project ENG --linear-completion-gate review-or-ci</text>
     <text x="28" y="122" fill="#9fb2aa" font-size="18" class="mono">LINEAR-104 -> workspace ready -> tests passed -> PR linked -> waiting human review</text>
   </g>
   <g transform="translate(956 472)">

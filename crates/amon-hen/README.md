@@ -1,20 +1,20 @@
 # Amon Hen CLI
 
-The installed binary is still `council`, but the tool you are running is Amon Hen: a native Rust command center for Codex, Claude, Gemini, and Linear delivery loops.
+Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear delivery loops.
 
 ## Install
 
 From this checkout:
 
 ```bash
-cargo install --path crates/council
-council --help
+cargo install --path crates/amon-hen
+amon-hen --help
 ```
 
 For development:
 
 ```bash
-cargo run -p council -- --help
+cargo run -p amon-hen -- --help
 ```
 
 Amon Hen shells out to provider CLIs that are already authenticated on your machine:
@@ -26,10 +26,10 @@ Amon Hen shells out to provider CLIs that are already authenticated on your mach
 Override binary paths when your CLIs are not on `PATH`:
 
 ```bash
-COUNCIL_CODEX_BIN=/path/to/codex \
-COUNCIL_CLAUDE_BIN=/path/to/claude \
-COUNCIL_GEMINI_BIN=/path/to/gemini \
-council --auth-status --capabilities-status
+AMON_HEN_CODEX_BIN=/path/to/codex \
+AMON_HEN_CLAUDE_BIN=/path/to/claude \
+AMON_HEN_GEMINI_BIN=/path/to/gemini \
+amon-hen --auth-status --capabilities-status
 ```
 
 ## Studio
@@ -37,7 +37,7 @@ council --auth-status --capabilities-status
 Open the native interactive Studio:
 
 ```bash
-council --studio --members codex,claude,gemini
+amon-hen --studio --members codex,claude,gemini
 ```
 
 Studio gives you selectable panes for settings, agents, auth, Linear, files, tools, provider capabilities, token usage, command logs, and help. It supports role changes after launch, manual provider auth method selection, browser-tab social login handoff, file tagging, command tagging, per-provider capability overrides, and double-Ctrl+C exit.
@@ -47,7 +47,7 @@ Studio gives you selectable panes for settings, agents, auth, Linear, files, too
 Ask all providers and synthesize once:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   "Inspect this repo and propose the cleanest next patch"
 ```
@@ -55,7 +55,7 @@ council \
 Pick roles and let providers hand work to each other:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --planner codex \
   --lead claude \
@@ -67,7 +67,7 @@ council \
 Fan out real same-provider sub-agents:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --planner codex \
   --lead claude \
@@ -80,7 +80,7 @@ council \
 Set model and effort per provider:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --codex-model gpt-5.2 \
   --codex-effort high \
@@ -94,7 +94,7 @@ council \
 Set permissions and execution policy:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --codex-sandbox workspace-write \
   --claude-permission-mode acceptEdits \
@@ -104,7 +104,7 @@ council \
 Inherit or override provider-native capability surfaces:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --codex-config ~/.codex/config.toml \
   --codex-mcp-profile repo \
@@ -121,13 +121,13 @@ council \
 Check local provider status:
 
 ```bash
-council --auth-status --capabilities-status
+amon-hen --auth-status --capabilities-status
 ```
 
 Launch social login flows for provider CLIs:
 
 ```bash
-council \
+amon-hen \
   --auth-login \
   --auth-login-providers codex,claude,gemini
 ```
@@ -139,17 +139,17 @@ The auth flow can open browser tabs and return through code paste or provider de
 Attach local files:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
-  --file crates/council/src/lib.rs \
-  --file crates/council/src/linear_delivery.rs \
+  --file crates/amon-hen/src/lib.rs \
+  --file crates/amon-hen/src/linear_delivery.rs \
   "Review these files and propose the next patch"
 ```
 
 Attach command output and show the commands as tool usage:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --cmd "cargo test --workspace --locked" \
   --cmd "cargo clippy --workspace --locked -- -D warnings" \
@@ -161,7 +161,7 @@ council \
 Run a long-lived Linear loop against a project:
 
 ```bash
-council \
+amon-hen \
   --deliver-linear \
   --linear-project ENG \
   --linear-until-complete \
@@ -184,7 +184,7 @@ Target epics, teams, states, assignees, labels, or explicit issues when you need
 Emit JSON for automation:
 
 ```bash
-council \
+amon-hen \
   --json \
   --members codex,claude,gemini \
   --team-work 1 \
@@ -194,7 +194,7 @@ council \
 Use verbose output when you want to see provider commands and telemetry in a plain terminal run:
 
 ```bash
-council \
+amon-hen \
   --verbose \
   --members codex,claude,gemini \
   --cmd "git status --short" \

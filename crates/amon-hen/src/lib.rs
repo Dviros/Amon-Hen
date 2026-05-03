@@ -54,9 +54,9 @@ impl Engine {
 
     fn binary_env_var(self) -> &'static str {
         match self {
-            Self::Codex => "COUNCIL_CODEX_BIN",
-            Self::Claude => "COUNCIL_CLAUDE_BIN",
-            Self::Gemini => "COUNCIL_GEMINI_BIN",
+            Self::Codex => "AMON_HEN_CODEX_BIN",
+            Self::Claude => "AMON_HEN_CLAUDE_BIN",
+            Self::Gemini => "AMON_HEN_GEMINI_BIN",
         }
     }
 
@@ -71,7 +71,7 @@ impl Engine {
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "council",
+    name = "amon-hen",
     version,
     about = "Ask multiple AI CLIs the same question, then synthesize their answers.",
     trailing_var_arg = true,
@@ -355,7 +355,7 @@ struct ResolvedArgs {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CouncilResult {
+pub struct AmonHenResult {
     query: String,
     cwd: String,
     members_requested: Vec<String>,
@@ -524,7 +524,7 @@ where
         return 0;
     }
 
-    let mut parse_args = vec![OsString::from("council")];
+    let mut parse_args = vec![OsString::from("amon-hen")];
     parse_args.extend(raw_args);
     let parsed = match CliArgs::try_parse_from(parse_args) {
         Ok(parsed) => parsed,
@@ -638,7 +638,7 @@ where
         eprintln!("{}", render_banner());
     }
 
-    let result = run_council(&resolved, prompt_context.prompt, prompt_context.commands);
+    let result = run_amon_hen(&resolved, prompt_context.prompt, prompt_context.commands);
     if resolved.raw.json || resolved.raw.json_stream {
         let serialized = if resolved.raw.json_stream {
             serde_json::to_string(&result)
@@ -1439,11 +1439,11 @@ fn build_prompt_context(resolved: &ResolvedArgs) -> Result<PromptContext, String
     Ok(PromptContext { prompt, commands })
 }
 
-fn run_council(
+fn run_amon_hen(
     resolved: &ResolvedArgs,
     query: String,
     prompt_commands: Vec<CommandTelemetry>,
-) -> CouncilResult {
+) -> AmonHenResult {
     let workflow = build_workflow(resolved);
     let mut previous_iteration = Vec::new();
     let mut final_members = Vec::new();
@@ -1464,7 +1464,7 @@ fn run_council(
             bin: None,
             status: "error".to_string(),
             duration_ms: 0,
-            detail: "No council member produced a response.".to_string(),
+            detail: "No Amon Hen member produced a response.".to_string(),
             exit_code: None,
             stdout: String::new(),
             stderr: String::new(),
@@ -1495,7 +1495,7 @@ fn run_council(
         run_engine(&summarizer, options)
     };
 
-    CouncilResult {
+    AmonHenResult {
         query,
         cwd: resolved.cwd.display().to_string(),
         members_requested: resolved.members.clone(),
@@ -1800,7 +1800,7 @@ fn provider_option(
 
 fn build_sub_agent_prompt(original: &str, role: &str, index: usize, total: usize) -> String {
     format!(
-        "You are sub-agent {index} of {total} for a Council provider assigned role `{role}`.\n\
+        "You are sub-agent {index} of {total} for an Amon Hen provider assigned role `{role}`.\n\
          Work independently on a useful slice of the task. Inspect, reason, or verify as needed, \
          then return concise findings, risks, and concrete recommendations for the provider lead.\n\n\
          Original provider prompt:\n{original}"
@@ -1826,7 +1826,7 @@ fn build_team_lead_prompt(original: &str, sub_agents: &[EngineResult]) -> String
         .join("\n\n");
     format!(
         "You are the provider lead. Use the sub-agent handoffs below, resolve disagreements, \
-         and produce the final provider response for the original Council role.\n\n\
+         and produce the final provider response for the original Amon Hen role.\n\n\
          Sub-agent handoffs:\n{handoff}\n\nOriginal provider prompt:\n{original}"
     )
 }
@@ -2412,9 +2412,9 @@ fn build_member_prompt(
     plan_output: &str,
 ) -> String {
     let mut sections = vec![
-        "You are one member of a multi-model council.".to_string(),
+        "You are one member of a multi-model Amon Hen run.".to_string(),
         format!(
-            "Council workflow: iteration {iteration} of {}.",
+            "Amon Hen workflow: iteration {iteration} of {}.",
             workflow.iterations
         ),
         workflow
@@ -2443,7 +2443,7 @@ fn build_member_prompt(
     }
     if workflow.handoff {
         sections.push(
-            "Handoff mode is enabled. Treat earlier council outputs as working context."
+            "Handoff mode is enabled. Treat earlier Amon Hen outputs as working context."
                 .to_string(),
         );
     }
@@ -2458,7 +2458,7 @@ fn build_member_prompt(
         .collect::<Vec<_>>()
         .join("\n\n");
     if !context.is_empty() {
-        sections.push(format!("Earlier council handoffs:\n{context}"));
+        sections.push(format!("Earlier Amon Hen handoffs:\n{context}"));
     }
     sections.push(format!("Current user query:\n{}", query.trim()));
     sections.join("\n\n")
@@ -2479,7 +2479,7 @@ fn build_summary_prompt(
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
-        "You are synthesizing answers from multiple AI CLI tools.\n\nCouncil workflow: {} iteration{}, {}.\nLead model: {}.\nPlanner model: {}.\nProduce one final answer to the original user query.\nAnswer directly. Call out meaningful disagreement or uncertainty when it exists.\n\nCurrent user query:\n{}\n\nCouncil member responses:\n{}",
+        "You are synthesizing answers from multiple AI CLI tools.\n\nAmon Hen workflow: {} iteration{}, {}.\nLead model: {}.\nPlanner model: {}.\nProduce one final answer to the original user query.\nAnswer directly. Call out meaningful disagreement or uncertainty when it exists.\n\nCurrent user query:\n{}\n\nAmon Hen member responses:\n{}",
         workflow.iterations,
         if workflow.iterations == 1 { "" } else { "s" },
         if workflow.handoff { "handoff enabled" } else { "parallel consultation" },
@@ -2790,14 +2790,14 @@ fn linear_delivery_requested(raw: &CliArgs) -> bool {
 }
 
 fn render_banner() -> &'static str {
-    "  ____   ___  _   _ _   _  ____ ___ _     \n / ___| / _ \\| | | | \\ | |/ ___|_ _| |    \n| |    | | | | | | |  \\| | |    | || |    \n| |___ | |_| | |_| | |\\  | |___ | || |___ \n \\____| \\___/ \\___/|_| \\_|\\____|___|_____|"
+    "    _                         _   _            \n   / \\   _ __ ___   ___  _ __ | | | | ___ _ __  \n  / _ \\ | '_ ` _ \\ / _ \\| '_ \\| |_| |/ _ \\ '_ \\ \n / ___ \\| | | | | | (_) | | | |  _  |  __/ | | |\n/_/   \\_\\_| |_| |_|\\___/|_| |_|_| |_|\\___|_| |_|"
 }
 
-fn render_human_result(result: &CouncilResult, verbose: bool) -> String {
+fn render_human_result(result: &AmonHenResult, verbose: bool) -> String {
     let mut lines = Vec::new();
     if verbose {
         lines.push(format!(
-            "Council consulted: {}",
+            "Amon Hen consulted: {}",
             result.members_requested.join(", ")
         ));
         for command in &result.prompt_commands {
@@ -2853,7 +2853,7 @@ fn indent(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
-fn is_success(result: &CouncilResult) -> bool {
+fn is_success(result: &AmonHenResult) -> bool {
     result.members.iter().any(|member| member.status == "ok") && result.summary.status == "ok"
 }
 
@@ -2863,8 +2863,8 @@ mod tests {
 
     #[test]
     fn help_flags_use_success_exit_code() {
-        let long_help = CliArgs::try_parse_from(["council", "--help"]).unwrap_err();
-        let short_help = CliArgs::try_parse_from(["council", "-h"]).unwrap_err();
+        let long_help = CliArgs::try_parse_from(["amon-hen", "--help"]).unwrap_err();
+        let short_help = CliArgs::try_parse_from(["amon-hen", "-h"]).unwrap_err();
 
         assert_eq!(long_help.kind(), ErrorKind::DisplayHelp);
         assert_eq!(short_help.kind(), ErrorKind::DisplayHelp);
@@ -2875,7 +2875,7 @@ mod tests {
     #[test]
     fn parses_members_and_provider_flags() {
         let args = CliArgs::try_parse_from([
-            "council",
+            "amon-hen",
             "--members",
             "codex,claude",
             "--planner",
@@ -2915,7 +2915,7 @@ mod tests {
     #[test]
     fn parses_legacy_npm_linear_flags_in_rust() {
         let args = CliArgs::try_parse_from([
-            "council",
+            "amon-hen",
             "--banner",
             "--auth-open-browser",
             "--members",
@@ -2974,7 +2974,7 @@ mod tests {
             teams: HashMap::new(),
         };
         let prompt = build_member_prompt("Fix the bug", "planner", &workflow, 1, &[], &[], "");
-        assert!(prompt.contains("Council workflow: iteration 1 of 2."));
+        assert!(prompt.contains("Amon Hen workflow: iteration 1 of 2."));
         assert!(prompt.contains("Lead model: claude."));
         assert!(prompt.contains("Planner model: codex."));
         assert!(prompt.contains("Your assigned role: planner."));

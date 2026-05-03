@@ -16,12 +16,12 @@ const siteUrl = Astro.site?.toString().replace(/\/$/, "") ?? defaultSiteUrl;
 const pageUrl = `${siteUrl}/`;
 const metaImage = `${siteUrl}${ogImagePath}`;
 const repoUrl = "https://github.com/Dviros/Amon-Hen";
-const docsUrl = `${repoUrl}/blob/main/crates/council/README.md`;
+const docsUrl = `${repoUrl}/blob/main/crates/amon-hen/README.md`;
 const actionsUrl = `${repoUrl}/actions`;
 const releasesUrl = `${repoUrl}/releases`;
 const securityUrl = `${repoUrl}/blob/main/SECURITY.md`;
 const linkedInUrl = "https://www.linkedin.com/in/dviros/";
-const crateName = "council";
+const crateName = "amon-hen";
 const crateVersion = "0.1.5";
 const crateUrl = `https://crates.io/crates/${crateName}`;
 const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
@@ -145,7 +145,7 @@ const linearSteps = [
 const resourceLinks = [
   ["GitHub", repoUrl, "Source, issues, releases, and Actions."],
   ["CLI guide", docsUrl, "Install, Studio, provider controls, Linear, and telemetry examples."],
-  ["crates.io", crateUrl, "Rust package metadata for the compatibility binary."],
+  ["crates.io", crateUrl, "Rust package metadata for the Amon Hen CLI."],
   ["Actions", actionsUrl, "CI runs for the Rust workspace and site."],
   ["Security", securityUrl, "Private vulnerability reporting and supported versions."],
   ["LinkedIn", linkedInUrl, "Dviros on LinkedIn."],
@@ -1278,8 +1278,8 @@ const resourceLinks = [
                   <span>terminal</span>
                   <span>{examplePrompt}</span>
                 </div>
-                <pre><code>cargo install --path crates/council
-council --studio --members codex,claude,gemini</code></pre>
+                <pre><code>cargo install --path crates/amon-hen
+amon-hen --studio --members codex,claude,gemini</code></pre>
               </div>
             </div>
 
@@ -1417,7 +1417,7 @@ council --studio --members codex,claude,gemini</code></pre>
                 <span>terminal</span>
                 <span>autonomous delivery</span>
               </div>
-              <pre><code>council \
+              <pre><code>amon-hen \
   --deliver-linear \
   --linear-project ENG \
   --linear-until-complete \
@@ -1448,10 +1448,10 @@ council --studio --members codex,claude,gemini</code></pre>
               <span>terminal</span>
               <span>native Rust</span>
             </div>
-            <pre><code>cargo install --path crates/council
-council --auth-status --capabilities-status
-council --studio --members codex,claude,gemini
-council --members codex,claude,gemini --team-work 2 "Inspect this repo"</code></pre>
+            <pre><code>cargo install --path crates/amon-hen
+amon-hen --auth-status --capabilities-status
+amon-hen --studio --members codex,claude,gemini
+amon-hen --members codex,claude,gemini --team-work 2 "Inspect this repo"</code></pre>
           </div>
         </section>
 

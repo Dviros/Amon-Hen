@@ -16,13 +16,13 @@
   <circle cx="162" cy="86" r="8" fill="#2f7d69"/>
   <text x="194" y="92" fill="#f6f7f2" font-size="17" font-weight="800" class="mono">Amon Hen command cookbook</text>
   <text x="96" y="164" fill="#d8b45f" font-size="18" class="mono">$</text>
-  <text x="126" y="164" fill="#e8ede4" font-size="18" class="mono">council \</text>
+  <text x="126" y="164" fill="#e8ede4" font-size="18" class="mono">amon-hen \</text>
   <text x="126" y="202" fill="#9fd0bf" font-size="18" class="mono">  --members codex,claude,gemini --planner codex --lead claude --handoff \</text>
   <text x="126" y="240" fill="#9fd0bf" font-size="18" class="mono">  --iterations 2 --team-work 2 \</text>
   <text x="126" y="278" fill="#e7c980" font-size="18" class="mono">  --codex-model gpt-5.2 --codex-effort high --codex-mcp-profile default \</text>
   <text x="126" y="316" fill="#f0b39f" font-size="18" class="mono">  --claude-model sonnet --claude-effort max --claude-allowed-tools Edit,Bash \</text>
   <text x="126" y="354" fill="#aac5ff" font-size="18" class="mono">  --gemini-model gemini-pro --gemini-effort high --gemini-tools-profile repo \</text>
-  <text x="126" y="392" fill="#e8ede4" font-size="18" class="mono">  --file crates/council/src/lib.rs --cmd "cargo test --workspace" \</text>
+  <text x="126" y="392" fill="#e8ede4" font-size="18" class="mono">  --file crates/amon-hen/src/lib.rs --cmd "cargo test --workspace" \</text>
   <text x="126" y="430" fill="#e8ede4" font-size="18" class="mono">  "Deliver the next Linear issue to review-or-ci"</text>
   <text x="96" y="494" fill="#2f7d69" font-size="18" class="mono">ok</text>
   <text x="140" y="494" fill="#9fb2aa" font-size="18" class="mono">planner ran, 3 providers consulted, 6 sub-agents spawned, tools and token usage captured</text>

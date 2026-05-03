@@ -8,7 +8,7 @@
   <p>
     <a href="https://amonhen.legit.place">Website</a>
     ·
-    <a href="crates/council/README.md">CLI docs</a>
+    <a href="crates/amon-hen/README.md">CLI docs</a>
     ·
     <a href="https://github.com/Dviros/Amon-Hen/actions">CI</a>
     ·
@@ -21,8 +21,6 @@
 ## What This Is
 
 Amon Hen turns local AI coding CLIs into a coordinated delivery team. Codex can plan, Claude can lead, Gemini can execute, and each provider can spawn its own same-provider sub-agents when the task needs more hands. You get one native terminal surface for roles, handoffs, iterations, auth, provider capability overrides, token telemetry, tool logs, local files, command context, and Linear delivery.
-
-The shipped binary remains `council` for compatibility. The project identity is Amon Hen.
 
 This is a ground-up Rust implementation. The CLI and delivery runtime live in the Cargo workspace.
 
@@ -38,22 +36,22 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install --path crates/council
+cargo install --path crates/amon-hen
 ```
 
 From a checkout:
 
 ```bash
-cargo run -p council -- --help
+cargo run -p amon-hen -- --help
 ```
 
 Provider binary paths can be overridden when needed:
 
 ```bash
-COUNCIL_CODEX_BIN=/path/to/codex \
-COUNCIL_CLAUDE_BIN=/path/to/claude \
-COUNCIL_GEMINI_BIN=/path/to/gemini \
-council --auth-status --capabilities-status
+AMON_HEN_CODEX_BIN=/path/to/codex \
+AMON_HEN_CLAUDE_BIN=/path/to/claude \
+AMON_HEN_GEMINI_BIN=/path/to/gemini \
+amon-hen --auth-status --capabilities-status
 ```
 
 ## Command Cookbook
@@ -61,13 +59,13 @@ council --auth-status --capabilities-status
 Open the interactive Studio:
 
 ```bash
-council --studio --members codex,claude,gemini
+amon-hen --studio --members codex,claude,gemini
 ```
 
 Ask all providers and synthesize one answer:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   "Inspect this repo and propose the cleanest next patch"
 ```
@@ -75,7 +73,7 @@ council \
 Pick roles, handoff, iterations, and same-provider sub-agents:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --planner codex \
   --lead claude \
@@ -88,7 +86,7 @@ council \
 Control model and effort per provider:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --codex-model gpt-5.2 \
   --codex-effort high \
@@ -102,7 +100,7 @@ council \
 Override provider permissions and capability surfaces:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
   --codex-sandbox workspace-write \
   --codex-config ~/.codex/config.toml \
@@ -119,7 +117,7 @@ council \
 Launch provider social login flows:
 
 ```bash
-council \
+amon-hen \
   --auth-login \
   --auth-login-providers codex,claude,gemini
 ```
@@ -127,9 +125,9 @@ council \
 Attach local files and command output to the prompt:
 
 ```bash
-council \
+amon-hen \
   --members codex,claude,gemini \
-  --file crates/council/src/lib.rs \
+  --file crates/amon-hen/src/lib.rs \
   --cmd "cargo test --workspace --locked" \
   --cmd "cargo clippy --workspace --locked -- -D warnings" \
   "Review this change and identify the next fix"
@@ -138,7 +136,7 @@ council \
 Run a long-lived Linear delivery loop:
 
 ```bash
-council \
+amon-hen \
   --deliver-linear \
   --linear-project ENG \
   --linear-until-complete \
@@ -157,7 +155,7 @@ council \
 Emit machine-readable telemetry:
 
 ```bash
-council \
+amon-hen \
   --json \
   --members codex,claude,gemini \
   --team-work 1 \
@@ -195,11 +193,11 @@ The delivery loop can:
 - post progress comments and optional review-state updates
 - wait for GitHub CI or hand work to human review
 
-## Repository Layout
+## Project Layout
 
 ```text
 .
-├── crates/council/      # Rust crate and council binary
+├── crates/amon-hen/      # Rust crate and amon-hen binary
 ├── web/                 # Product site
 ├── docs/screenshots/    # README visuals
 └── .github/workflows/   # CI and release automation

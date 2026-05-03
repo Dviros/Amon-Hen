@@ -1,6 +1,6 @@
 # Amon Hen Web
 
-Astro site for Amon Hen, deployed as a Cloudflare Worker at `amonhen.legit.place`.
+Astro site for Amon Hen.
 
 ## Development
 

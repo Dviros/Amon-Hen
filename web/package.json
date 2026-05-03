@@ -2,7 +2,7 @@
   "name": "amon-hen-web",
   "version": "0.0.0",
   "private": true,
-  "description": "Cloudflare Worker site for Amon Hen.",
+  "description": "Amon Hen product site.",
   "type": "module",
   "scripts": {
     "generate-og": "node scripts/generate-og.mjs",

@@ -83,7 +83,7 @@ struct StudioState {
     capability_index: usize,
     linear_index: usize,
     result_index: usize,
-    last_result: Option<CouncilResult>,
+    last_result: Option<AmonHenResult>,
     last_linear_result: Option<String>,
     last_auth_result: Option<String>,
     last_capability_result: Option<String>,
@@ -96,7 +96,7 @@ struct StudioState {
 
 enum StudioAction {
     None,
-    RunCouncil,
+    RunAmonHen,
     SocialLogin,
     AuthStatus,
     CapabilitiesStatus,
@@ -192,8 +192,8 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         match action {
             StudioAction::None => {}
             StudioAction::Quit => return 130,
-            StudioAction::RunCouncil => {
-                run_external_action(&mut guard, || run_council_from_studio(&mut state));
+            StudioAction::RunAmonHen => {
+                run_external_action(&mut guard, || run_amon_hen_from_studio(&mut state));
             }
             StudioAction::SocialLogin => {
                 run_external_action(&mut guard, || match run_social_login(&state.resolved) {
@@ -268,8 +268,8 @@ fn run_external_action(guard: &mut TerminalGuard, action: impl FnOnce()) {
     let _ = guard;
 }
 
-fn run_council_from_studio(state: &mut StudioState) {
-    state.status = "Running council...".to_string();
+fn run_amon_hen_from_studio(state: &mut StudioState) {
+    state.status = "Running Amon Hen...".to_string();
     let mut resolved = state.resolved.clone();
     resolved.prompt = state.prompt.clone();
     let prompt_context = match build_prompt_context(&resolved) {
@@ -279,11 +279,11 @@ fn run_council_from_studio(state: &mut StudioState) {
             return;
         }
     };
-    let result = run_council(&resolved, prompt_context.prompt, prompt_context.commands);
+    let result = run_amon_hen(&resolved, prompt_context.prompt, prompt_context.commands);
     state.status = if is_success(&result) {
-        "Council run completed".to_string()
+        "Amon Hen run completed".to_string()
     } else {
-        "Council run needs attention".to_string()
+        "Amon Hen run needs attention".to_string()
     };
     state.last_result = Some(result);
     state.focus = Pane::Results;
@@ -310,7 +310,7 @@ fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, S
             state.status = "Press Ctrl+C twice to quit, or Enter on Quit from the menu".to_string();
         }
         KeyCode::Char('?') => state.show_help = !state.show_help,
-        KeyCode::Char('r') => return Ok(StudioAction::RunCouncil),
+        KeyCode::Char('r') => return Ok(StudioAction::RunAmonHen),
         KeyCode::Tab => cycle_focus(state, 1),
         KeyCode::BackTab => cycle_focus(state, -1),
         KeyCode::Char('[') => move_focused_pane(state, -1),
@@ -569,7 +569,7 @@ fn activate_selection(state: &mut StudioState) -> Result<StudioAction, String> {
 
 fn activate_menu(state: &mut StudioState) -> Result<StudioAction, String> {
     match MENU[state.menu_index] {
-        "Run / re-run" => Ok(StudioAction::RunCouncil),
+        "Run / re-run" => Ok(StudioAction::RunAmonHen),
         "Edit prompt" => start_input(state, InputMode::Prompt, state.prompt.clone()),
         "Social login" => Ok(StudioAction::SocialLogin),
         "Auth status" => Ok(StudioAction::AuthStatus),
@@ -989,7 +989,7 @@ fn draw(state: &StudioState) -> Result<(), String> {
         .map_err(|error| format!("Failed to draw Studio: {error}"))?;
 
     let header = format!(
-        "Council Studio | members {} | lead {} | planner {} | handoff {} | {}x",
+        "Amon Hen Studio | members {} | lead {} | planner {} | handoff {} | {}x",
         state.resolved.members.join(","),
         state.resolved.raw.lead.as_deref().unwrap_or("auto"),
         state.resolved.raw.planner.as_deref().unwrap_or("none"),
@@ -1452,7 +1452,7 @@ fn write_help(out: &mut impl Write) -> Result<(), String> {
 
 fn render_noninteractive_studio_snapshot(resolved: &ResolvedArgs) -> String {
     [
-        "Council Studio requires an interactive TTY.",
+        "Amon Hen Studio requires an interactive TTY.",
         "Native Studio is available from a terminal with --studio.",
         "",
         "Current setup:",
@@ -1585,7 +1585,7 @@ mod tests {
 
     #[test]
     fn renders_noninteractive_snapshot() {
-        let args = CliArgs::try_parse_from(["council", "--studio", "hello"]).unwrap();
+        let args = CliArgs::try_parse_from(["amon-hen", "--studio", "hello"]).unwrap();
         let resolved = resolve_args(args).unwrap();
         let snapshot = render_noninteractive_studio_snapshot(&resolved);
         assert!(snapshot.contains("Native Studio is available"));
