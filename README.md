@@ -36,12 +36,13 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install --path crates/amon-hen
+cargo install amon-hen
 ```
 
 From a checkout:
 
 ```bash
+cargo install --path crates/amon-hen
 cargo run -p amon-hen -- --help
 ```
 

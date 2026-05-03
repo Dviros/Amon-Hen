@@ -4,16 +4,17 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 
 ## Install
 
+From crates.io:
+
+```bash
+cargo install amon-hen
+amon-hen --help
+```
+
 From this checkout:
 
 ```bash
 cargo install --path crates/amon-hen
-amon-hen --help
-```
-
-For development:
-
-```bash
 cargo run -p amon-hen -- --help
 ```
 
