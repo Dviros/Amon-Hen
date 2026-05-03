@@ -1,8 +1,8 @@
 {
-  "name": "council-web",
+  "name": "amon-hen-web",
   "version": "0.0.0",
   "private": true,
-  "description": "Landing page for council.",
+  "description": "Cloudflare Worker site for Amon Hen.",
   "type": "module",
   "scripts": {
     "generate-og": "node scripts/generate-og.mjs",

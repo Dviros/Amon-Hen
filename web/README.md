@@ -1,6 +1,6 @@
-# council-web
+# Amon Hen Web
 
-Astro landing page for `council`.
+Astro site for Amon Hen, deployed as a Cloudflare Worker at `amonhen.legit.place`.
 
 ## Development
 
@@ -9,14 +9,16 @@ npm install
 npm run dev
 ```
 
-## Production build
+## Production Build
 
 ```bash
 npm run build
 ```
 
-## Dependency notes
+## Deploy
 
-- The Astro and Cloudflare adapter dependencies are declared in `package.json`.
-- Tailwind is installed from npm and wired through Astro's Vite pipeline via `@tailwindcss/vite`.
-- The Tailwind entry stylesheet lives at `src/styles/global.css`.
+```bash
+npm run deploy
+```
+
+Wrangler reads the Worker name and custom domain from `wrangler.jsonc`. Cloudflare credentials must come from the environment and must not be written into this repository.

@@ -4,7 +4,7 @@
 
 Security fixes are currently provided for:
 
-- the latest published `council` Rust crate release
+- the latest published Amon Hen Rust crate release
 - the `main` branch in this repository
 
 Older releases may not receive patches.

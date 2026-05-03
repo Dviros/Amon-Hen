@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   defaultSiteUrl,
+  description,
   ogHeadline,
   siteName,
 } from "../src/site-meta.js";
@@ -27,7 +28,7 @@ async function rasterizedSvgDataUrl(path, size) {
   return `data:image/png;base64,${png.toString("base64")}`;
 }
 
-function agentPill(label, logoSrc, logoStyle = {}) {
+function logoPill(label, logoSrc, accent, logoStyle = {}) {
   return {
     type: "div",
     props: {
@@ -35,21 +36,21 @@ function agentPill(label, logoSrc, logoStyle = {}) {
         display: "flex",
         alignItems: "center",
         gap: "12px",
-        padding: "12px 22px 12px 16px",
-        borderRadius: "999px",
-        border: "1px solid rgba(212, 212, 216, 0.9)",
-        backgroundColor: "#ffffff",
-        boxShadow:
-          "0 1px 2px rgba(15, 23, 42, 0.05), 0 10px 30px rgba(15, 23, 42, 0.06)",
+        height: "56px",
+        padding: "0 20px 0 14px",
+        borderRadius: "8px",
+        border: `2px solid ${accent}`,
+        backgroundColor: "#f9faf4",
+        color: "#10251f",
       },
       children: [
         {
           type: "img",
           props: {
             src: logoSrc,
-            width: 28,
-            height: 28,
-            style: { width: "28px", height: "28px", objectFit: "contain", ...logoStyle },
+            width: 30,
+            height: 30,
+            style: { width: "30px", height: "30px", objectFit: "contain", ...logoStyle },
           },
         },
         {
@@ -57,9 +58,8 @@ function agentPill(label, logoSrc, logoStyle = {}) {
           props: {
             style: {
               display: "flex",
-              color: "#18181b",
-              fontSize: "26px",
-              fontWeight: 600,
+              fontSize: "28px",
+              fontWeight: 700,
               lineHeight: 1,
             },
             children: label,
@@ -70,34 +70,30 @@ function agentPill(label, logoSrc, logoStyle = {}) {
   };
 }
 
-function buildMarkup({ councilLogo, codexLogo, claudeLogo, geminiLogo }) {
+function buildMarkup({ codexLogo, claudeLogo, geminiLogo }) {
   return {
     type: "div",
     props: {
       style: {
         display: "flex",
         position: "relative",
-        flexDirection: "column",
         width: "100%",
         height: "100%",
-        overflow: "hidden",
-        backgroundColor: "#ffffff",
-        padding: "56px 64px",
+        backgroundColor: "#f6f7f2",
+        color: "#10251f",
+        padding: "54px 64px",
       },
       children: [
         {
           type: "div",
           props: {
             style: {
+              display: "flex",
               position: "absolute",
-              top: "-260px",
-              left: "50%",
-              transform: "translateX(-50%)",
-              width: "900px",
-              height: "640px",
-              borderRadius: "9999px",
-              background:
-                "radial-gradient(circle at 50% 50%, rgba(84, 111, 181, 0.22), rgba(84, 111, 181, 0.06) 42%, rgba(84, 111, 181, 0) 70%)",
+              inset: "0",
+              backgroundImage:
+                "linear-gradient(90deg, rgba(16,37,31,0.08) 1px, transparent 1px), linear-gradient(180deg, rgba(16,37,31,0.08) 1px, transparent 1px)",
+              backgroundSize: "48px 48px",
             },
           },
         },
@@ -107,9 +103,15 @@ function buildMarkup({ councilLogo, codexLogo, claudeLogo, geminiLogo }) {
             style: {
               display: "flex",
               position: "relative",
+              flexDirection: "column",
               justifyContent: "space-between",
-              alignItems: "center",
               width: "100%",
+              height: "100%",
+              border: "2px solid #10251f",
+              borderRadius: "8px",
+              backgroundColor: "#ffffff",
+              padding: "34px 38px",
+              boxShadow: "14px 14px 0 #d8b45f",
             },
             children: [
               {
@@ -118,20 +120,49 @@ function buildMarkup({ councilLogo, codexLogo, claudeLogo, geminiLogo }) {
                   style: {
                     display: "flex",
                     alignItems: "center",
-                    gap: "14px",
+                    justifyContent: "space-between",
                   },
                   children: [
                     {
-                      type: "img",
+                      type: "div",
                       props: {
-                        src: councilLogo,
-                        width: 44,
-                        height: 44,
                         style: {
-                          width: "44px",
-                          height: "44px",
-                          borderRadius: "10px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "16px",
                         },
+                        children: [
+                          {
+                            type: "div",
+                            props: {
+                              style: {
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                width: "54px",
+                                height: "54px",
+                                borderRadius: "8px",
+                                backgroundColor: "#10251f",
+                                color: "#d8b45f",
+                                fontSize: "24px",
+                                fontWeight: 700,
+                              },
+                              children: "AH",
+                            },
+                          },
+                          {
+                            type: "div",
+                            props: {
+                              style: {
+                                display: "flex",
+                                fontSize: "34px",
+                                fontWeight: 700,
+                                lineHeight: 1,
+                              },
+                              children: siteName,
+                            },
+                          },
+                        ],
                       },
                     },
                     {
@@ -139,13 +170,12 @@ function buildMarkup({ councilLogo, codexLogo, claudeLogo, geminiLogo }) {
                       props: {
                         style: {
                           display: "flex",
-                          color: "#09090b",
-                          fontSize: "30px",
+                          color: "#587067",
+                          fontSize: "23px",
                           fontWeight: 600,
-                          letterSpacing: "-0.01em",
                           lineHeight: 1,
                         },
-                        children: siteName,
+                        children: brandHost,
                       },
                     },
                   ],
@@ -156,63 +186,81 @@ function buildMarkup({ councilLogo, codexLogo, claudeLogo, geminiLogo }) {
                 props: {
                   style: {
                     display: "flex",
-                    color: "#71717a",
-                    fontSize: "22px",
-                    fontWeight: 500,
-                    letterSpacing: "0.01em",
-                    lineHeight: 1,
-                  },
-                  children: brandHost,
-                },
-              },
-            ],
-          },
-        },
-        {
-          type: "div",
-          props: {
-            style: {
-              display: "flex",
-              position: "relative",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              flex: 1,
-              width: "100%",
-              gap: "44px",
-              textAlign: "center",
-            },
-            children: [
-              {
-                type: "div",
-                props: {
-                  style: {
-                    display: "flex",
                     flexDirection: "column",
-                    alignItems: "center",
-                    color: "#09090b",
-                    fontSize: "104px",
-                    fontWeight: 700,
-                    lineHeight: 1.04,
-                    letterSpacing: "-0.045em",
-                    whiteSpace: "pre-line",
-                  },
-                  children: ogHeadline,
-                },
-              },
-              {
-                type: "div",
-                props: {
-                  style: {
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: "16px",
+                    gap: "28px",
                   },
                   children: [
-                    agentPill("Codex", codexLogo, { borderRadius: "6px" }),
-                    agentPill("Claude", claudeLogo),
-                    agentPill("Gemini", geminiLogo),
+                    {
+                      type: "div",
+                      props: {
+                        style: {
+                          display: "flex",
+                          flexDirection: "column",
+                          whiteSpace: "pre-line",
+                          fontSize: "88px",
+                          fontWeight: 700,
+                          lineHeight: 1.02,
+                        },
+                        children: ogHeadline,
+                      },
+                    },
+                    {
+                      type: "div",
+                      props: {
+                        style: {
+                          display: "flex",
+                          maxWidth: "930px",
+                          color: "#30453e",
+                          fontSize: "28px",
+                          fontWeight: 500,
+                          lineHeight: 1.34,
+                        },
+                        children: description,
+                      },
+                    },
+                  ],
+                },
+              },
+              {
+                type: "div",
+                props: {
+                  style: {
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  },
+                  children: [
+                    {
+                      type: "div",
+                      props: {
+                        style: {
+                          display: "flex",
+                          gap: "14px",
+                        },
+                        children: [
+                          logoPill("Codex", codexLogo, "#2f7d69", { borderRadius: "6px" }),
+                          logoPill("Claude", claudeLogo, "#b7472a"),
+                          logoPill("Gemini", geminiLogo, "#315fb5"),
+                        ],
+                      },
+                    },
+                    {
+                      type: "div",
+                      props: {
+                        style: {
+                          display: "flex",
+                          height: "56px",
+                          alignItems: "center",
+                          padding: "0 20px",
+                          borderRadius: "8px",
+                          backgroundColor: "#10251f",
+                          color: "#f6f7f2",
+                          fontSize: "24px",
+                          fontWeight: 700,
+                        },
+                        children: "Rust-native delivery studio",
+                      },
+                    },
                   ],
                 },
               },
@@ -225,31 +273,25 @@ function buildMarkup({ councilLogo, codexLogo, claudeLogo, geminiLogo }) {
 }
 
 async function main() {
-  const [interMedium, interSemiBold, interBold] = await Promise.all([
+  const [interMedium, interBold] = await Promise.all([
     readFile(join(rootDir, "src", "assets", "fonts", "Inter-500.woff")),
-    readFile(join(rootDir, "src", "assets", "fonts", "Inter-600.woff")),
     readFile(join(rootDir, "src", "assets", "fonts", "Inter-700.woff")),
   ]);
 
-  const [councilLogo, codexLogo, claudeLogo, geminiLogo] = await Promise.all([
-    pngDataUrl(join(rootDir, "src", "assets", "council-256.png")),
+  const [codexLogo, claudeLogo, geminiLogo] = await Promise.all([
     pngDataUrl(join(rootDir, "src", "assets", "agent-logos", "codex.png")),
     pngDataUrl(join(rootDir, "src", "assets", "agent-logos", "claude.png")),
     rasterizedSvgDataUrl(join(rootDir, "public", "agent-logos", "gemini.svg"), 64),
   ]);
 
-  const svg = await satori(
-    buildMarkup({ councilLogo, codexLogo, claudeLogo, geminiLogo }),
-    {
-      width: 1200,
-      height: 630,
-      fonts: [
-        { name: "Inter", data: interMedium, weight: 500, style: "normal" },
-        { name: "Inter", data: interSemiBold, weight: 600, style: "normal" },
-        { name: "Inter", data: interBold, weight: 700, style: "normal" },
-      ],
-    },
-  );
+  const svg = await satori(buildMarkup({ codexLogo, claudeLogo, geminiLogo }), {
+    width: 1200,
+    height: 630,
+    fonts: [
+      { name: "Inter", data: interMedium, weight: 500, style: "normal" },
+      { name: "Inter", data: interBold, weight: 700, style: "normal" },
+    ],
+  });
 
   const resvg = new Resvg(svg, { fitTo: { mode: "width", value: 1200 } });
   const png = resvg.render().asPng();

@@ -1,13 +1,11 @@
 {
-  "name": "Council",
-  "short_name": "Council",
-  "description": "Council runs Codex, Claude, and Gemini in parallel on the same prompt and synthesizes one answer.",
+  "name": "Amon Hen",
+  "short_name": "Amon Hen",
+  "description": "Amon Hen coordinates Codex, Claude, Gemini, and Linear from a native Rust delivery studio.",
   "icons": [
-    { "src": "council-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "council-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "council-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "amonhen.svg", "sizes": "any", "type": "image/svg+xml" }
   ],
-  "theme_color": "#243050",
-  "background_color": "#080c1c",
+  "theme_color": "#10251f",
+  "background_color": "#f6f7f2",
   "display": "standalone"
 }

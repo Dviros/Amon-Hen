@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Amon Hen</title>
+  <desc id="desc">A geometric eye mark for the Amon Hen project.</desc>
+  <rect width="128" height="128" rx="24" fill="#10251f"/>
+  <path d="M18 64c12.5-20.5 28-30.8 46-30.8S97.5 43.5 110 64c-12.5 20.5-28 30.8-46 30.8S30.5 84.5 18 64Z" fill="#f6f7f2"/>
+  <circle cx="64" cy="64" r="19" fill="#2f7d69"/>
+  <circle cx="64" cy="64" r="7" fill="#10251f"/>
+  <path d="M64 14v20M64 94v20M30 30l14 14M84 84l14 14M98 30 84 44M44 84 30 98" stroke="#d8b45f" stroke-width="6" stroke-linecap="round"/>
+</svg>

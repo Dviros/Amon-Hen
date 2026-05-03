@@ -1,13 +1,13 @@
-# council
+# Amon Hen CLI
 
-Native Rust CLI for Council.
+Native Rust CLI for Amon Hen. The installed binary is `council` for compatibility.
 
 ```bash
 cargo install --path crates/council
 council --members codex,claude,gemini "Compare these implementation options"
 ```
 
-Council shells out to the authenticated provider CLIs already installed on your machine:
+Amon Hen shells out to the authenticated provider CLIs already installed on your machine:
 
 - `codex`
 - `claude`
@@ -15,7 +15,7 @@ Council shells out to the authenticated provider CLIs already installed on your 
 
 Provider binary paths can be overridden with `COUNCIL_CODEX_BIN`, `COUNCIL_CLAUDE_BIN`, and `COUNCIL_GEMINI_BIN`.
 
-The Rust binary supports the main Council workflow flags for member selection, provider-specific model/effort/auth/permission/capability settings, planner/lead roles, handoff, iterations, real provider sub-agent fanout, prompt file tags, prompt commands, JSON output, headless execution, native Studio, and Linear delivery.
+The Rust binary supports the main Amon Hen workflow flags for member selection, provider-specific model/effort/auth/permission/capability settings, planner/lead roles, handoff, iterations, real provider sub-agent fanout, prompt file tags, prompt commands, JSON output, headless execution, native Studio, and Linear delivery.
 
 Useful native commands:
 

@@ -1,12 +1,11 @@
-export const defaultSiteUrl = "https://council.armstr.ng";
-export const siteName = "Council";
-export const authorName = "Colin Armstrong";
-export const xHandle = "@colinarms";
-export const title = "Council: Compare Codex, Claude, and Gemini in One CLI";
+export const defaultSiteUrl = "https://amonhen.legit.place";
+export const siteName = "Amon Hen";
+export const authorName = "Dviros";
+export const title = "Amon Hen: Rust-Native AI Delivery Studio";
 export const description =
-  "Council is an open-source CLI and terminal studio for coordinating Codex, Claude, and Gemini with social login, Linear delivery, telemetry, and one synthesized answer.";
-export const examplePrompt = "review this migration plan";
+  "Amon Hen coordinates Codex, Claude, Gemini, and Linear from a native Rust CLI with Studio controls, provider capabilities, telemetry, and autonomous delivery loops.";
+export const examplePrompt = "deliver the Linear project to review or passing CI";
 export const ogImagePath = "/og/home.png";
 export const ogImageAlt =
-  "Council CLI homepage for comparing Codex, Claude, and Gemini on the same prompt.";
-export const ogHeadline = "Ask three agents.\nGet one answer.";
+  "Amon Hen homepage showing a Rust-native AI delivery studio for Codex, Claude, Gemini, and Linear.";
+export const ogHeadline = "See the work.\nLead the agents.";

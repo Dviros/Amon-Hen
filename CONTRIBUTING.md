@@ -2,8 +2,8 @@
 
 This repo has two subprojects:
 
-- `crates/council/` is the native Rust `council` CLI crate.
-- `web/` is the landing page deployed separately.
+- `crates/council/` is the native Rust crate for Amon Hen. It ships the `council` binary for compatibility.
+- `web/` is the Amon Hen site deployed separately.
 
 ## Setup
 
@@ -26,7 +26,7 @@ npm run build
 ## Development guidelines
 
 - Keep the CLI scriptable first. Primary output belongs on stdout; progress and diagnostics belong on stderr.
-- Preserve safe defaults. `council` is a consultation wrapper, not an autonomous code-mutation tool.
+- Preserve safe defaults. Amon Hen should make autonomous behavior explicit and observable.
 - Add tests with behavior changes, especially around parsing, failure isolation, output modes, and exit codes.
 - Keep dependency provenance explicit. If the web app vendors browser assets, document their source and checksum under `web/public/vendor/`.
 - Avoid runtime dependencies unless they materially improve portability or maintainability.

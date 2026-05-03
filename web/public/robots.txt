@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://council.armstr.ng/sitemap.xml
+Sitemap: https://amonhen.legit.place/sitemap.xml

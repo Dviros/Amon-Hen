@@ -1,8 +1,15 @@
 {
 	"compatibility_date": "2026-04-30",
 	"compatibility_flags": ["global_fetch_strictly_public"],
-	"name": "council-web",
+	"name": "amon-hen-web",
+	"account_id": "33539adfde5ac462659d7ccd6f8ae83f",
 	"main": "@astrojs/cloudflare/entrypoints/server",
+	"routes": [
+		{
+			"pattern": "amonhen.legit.place",
+			"custom_domain": true
+		}
+	],
 	"assets": {
 		"directory": "./dist",
 		"binding": "ASSETS"

@@ -1,9 +1,5 @@
 ---
-import { Font, Image } from "astro:assets";
-import councilNavLogo from "../assets/council-64.png";
-import councilHeroLogo from "../assets/council-256.png";
-import codexLogo from "../assets/agent-logos/codex.png";
-import claudeLogo from "../assets/agent-logos/claude.png";
+import { Font } from "astro:assets";
 import {
   authorName,
   defaultSiteUrl,
@@ -13,21 +9,18 @@ import {
   ogImagePath,
   siteName,
   title,
-  xHandle,
 } from "../site-meta.js";
 import "../styles/global.css";
 
 const siteUrl = Astro.site?.toString().replace(/\/$/, "") ?? defaultSiteUrl;
 const pageUrl = `${siteUrl}/`;
 const metaImage = `${siteUrl}${ogImagePath}`;
-const repoUrl = "https://github.com/seeARMS/council";
-const crateName = "council";
-const crateVersion = "0.1.5";
+const repoUrl = "https://github.com/Dviros/council";
 const docsUrl = `${repoUrl}/blob/main/crates/council/README.md`;
 const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
+const crateName = "council";
+const crateVersion = "0.1.5";
 const crateUrl = `https://crates.io/crates/${crateName}`;
-const xUrl = "https://x.com/colinarms";
-const GA_MEASUREMENT_ID = "G-VLG18DVXN5";
 const robotsContent = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
 const structuredData = JSON.stringify([
   {
@@ -40,7 +33,7 @@ const structuredData = JSON.stringify([
     publisher: {
       "@type": "Person",
       name: authorName,
-      url: xUrl,
+      url: "https://github.com/Dviros",
     },
   },
   {
@@ -54,38 +47,61 @@ const structuredData = JSON.stringify([
     applicationSubCategory: "Command-line interface",
     softwareVersion: crateVersion,
     downloadUrl: crateUrl,
-    installUrl: crateUrl,
     softwareHelp: {
       "@type": "CreativeWork",
       url: docsUrl,
     },
     runtimePlatform: "Native Rust binary",
-    softwareRequirements: "At least one authenticated Codex, Claude, or Gemini CLI installed locally",
+    softwareRequirements: "Authenticated Codex, Claude, or Gemini CLI installed locally",
     license: licenseUrl,
     image: metaImage,
-    screenshot: [
-      `${siteUrl}/screenshots/screenshot-1.jpg`,
-      `${siteUrl}/screenshots/screenshot-3.jpg`,
-    ],
     author: {
       "@type": "Person",
       name: authorName,
-      url: xUrl,
+      url: "https://github.com/Dviros",
     },
     isAccessibleForFree: true,
-    keywords: "Codex, Claude, Gemini, AI coding CLI, developer tools, multi-agent CLI",
+    keywords: "Codex, Claude, Gemini, Linear, AI agents, Rust CLI, terminal UI",
     featureList: [
-      "Runs Codex, Claude, and Gemini in parallel",
-      "Synthesizes one answer across multiple model outputs",
-      "Provides native provider settings, lead and planner roles, handoffs, iterations, and real provider sub-agent teams",
-      "Launches provider social-login flows, checks auth status, and preserves browser deeplink and code paste authentication",
-      "Runs native Linear project and epic delivery loops with isolated workspaces, reconciliation, comments, media, and review or CI gates",
-      "Shows provider token usage, sub-agent usage, prompt commands, and tool command telemetry",
-      "Manages inherit or override modes for provider-native tools, skills, MCP, agents, plugins, policies, and extensions",
+      "Native Rust orchestration for Codex, Claude, and Gemini",
+      "Interactive Studio with auth, provider capabilities, telemetry, prompt file tags, and command tools",
+      "Provider-specific model, effort, sandbox, MCP, Skills, tools, and permission controls",
+      "Long-running Linear delivery loops with isolated workspaces, retries, reconciliation, media, and review or CI gates",
+      "Team-work fanout that lets each provider run same-provider sub-agents",
     ],
-    sameAs: [repoUrl, crateUrl, xUrl],
+    sameAs: [repoUrl, crateUrl],
   },
 ]);
+
+const providerRows = [
+  ["Codex", "/agent-logos/codex.png", "planner", "gpt-5.2", "high", "inherit MCP profile"],
+  ["Claude", "/agent-logos/claude.png", "lead", "sonnet", "max", "override tools"],
+  ["Gemini", "/agent-logos/gemini.svg", "executor", "gemini-pro", "high", "settings profile"],
+];
+
+const workflowCards = [
+  ["Studio first", "Move panes, change roles, tag files, onboard auth, inspect tools, and rerun without leaving the terminal."],
+  ["Provider-native", "Inherit each CLI's local config by default, then override MCP, Skills, tools, model, effort, or permissions when the task needs it."],
+  ["Linear loop", "Poll selected projects or epics, isolate each issue workspace, retry failures, reconcile state, and stop at review or passing CI."],
+  ["Observable agents", "See prompt commands, shell tools, token usage, sub-agent fanout, provider status, and final synthesis in one place."],
+];
+
+const linearSteps = [
+  ["Target", "Select Linear projects, epics, labels, teams, or explicit issue IDs."],
+  ["Plan", "Assign planner, lead, and executors with phase-specific provider prompts."],
+  ["Work", "Create isolated workspaces, run tools, attach media, and comment progress back to Linear."],
+  ["Gate", "Reconcile retries and finish only at human review or GitHub CI success."],
+];
+
+const capabilityFlags = [
+  "--codex-config",
+  "--codex-mcp-profile",
+  "--claude-mcp-config",
+  "--claude-allowed-tools",
+  "--claude-disallowed-tools",
+  "--gemini-settings",
+  "--gemini-tools-profile",
+];
 ---
 
 <!DOCTYPE html>
@@ -93,14 +109,9 @@ const structuredData = JSON.stringify([
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" type="image/svg+xml" href="/council.svg" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/amonhen.svg" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#18181b" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#10251f" />
     <meta name="application-name" content={siteName} />
     <meta name="apple-mobile-web-app-title" content={siteName} />
     <meta name="author" content={authorName} />
@@ -126,597 +137,1034 @@ const structuredData = JSON.stringify([
     <meta property="og:type" content="website" />
     <meta property="og:url" content={pageUrl} />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content={xHandle} />
-    <meta name="twitter:creator" content={xHandle} />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={metaImage} />
     <meta name="twitter:image:alt" content={ogImageAlt} />
 
-    <link rel="dns-prefetch" href="https://www.googletagmanager.com" />
     <Font cssVariable="--font-inter" preload />
     <Font cssVariable="--font-geist-mono" preload />
     <script type="application/ld+json" set:html={structuredData}></script>
-
     <script is:inline>
-      const root = document.documentElement;
-      const darkModeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-      const THEME_TRANSITION_MS = 280;
-      let themeTransitionTimeout;
-
-      // Start entrance motion only after the first paint so production and dev behave the same.
       if (window.matchMedia("(prefers-reduced-motion: no-preference)").matches) {
-        root.classList.add("motion-pending");
+        document.documentElement.classList.add("motion-pending");
         window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
-            root.classList.remove("motion-pending");
-            root.classList.add("motion-ready");
+            document.documentElement.classList.remove("motion-pending");
+            document.documentElement.classList.add("motion-ready");
           });
         });
       }
-
-      updateMode();
-      darkModeMediaQuery.addEventListener("change", () => {
-        if (localStorage.getItem("theme")) {
-          updateMode();
-          return;
-        }
-
-        startThemeTransition();
-        window.requestAnimationFrame(() => {
-          updateMode();
-        });
-      });
-
-      function updateMode() {
-        const saved = localStorage.getItem("theme");
-        const isDark = saved === "dark" || (!saved && darkModeMediaQuery.matches);
-
-        root.classList.toggle("dark", isDark);
-        root.style.colorScheme = isDark ? "dark" : "light";
-      }
-
-      function startThemeTransition() {
-        root.classList.add("theme-switching");
-        window.clearTimeout(themeTransitionTimeout);
-        themeTransitionTimeout = window.setTimeout(() => {
-          root.classList.remove("theme-switching");
-        }, THEME_TRANSITION_MS);
-      }
-
-      window.toggleDarkMode = function () {
-        const isDark = root.classList.contains("dark");
-        localStorage.setItem("theme", isDark ? "light" : "dark");
-        startThemeTransition();
-        window.requestAnimationFrame(() => {
-          updateMode();
-        });
-      };
     </script>
     <style is:global>
       html {
         scroll-behavior: smooth;
+        background: #f6f7f2;
       }
 
-      :root {
-        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+      body {
+        margin: 0;
+        min-width: 320px;
+        background: #f6f7f2;
+        color: #10251f;
+        font-family: var(--font-inter), system-ui, sans-serif;
+        text-rendering: geometricPrecision;
       }
 
-      .theme-switching,
-      .theme-switching *,
-      .theme-switching *::before,
-      .theme-switching *::after {
-        transition-property:
-          background-color,
-          border-color,
-          color,
-          fill,
-          stroke,
-          opacity,
-          box-shadow,
-          transform,
-          filter !important;
-        transition-duration: 280ms !important;
-        transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1) !important;
+      * {
+        box-sizing: border-box;
       }
 
-      .command-shell {
-        position: relative;
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .page-shell {
+        min-height: 100vh;
         overflow: hidden;
-        background: #09090b;
-        border-color: rgba(24, 24, 27, 0.95);
-        box-shadow:
-          0 1px 2px rgba(0, 0, 0, 0.14),
-          0 10px 28px rgba(15, 23, 42, 0.16),
-          0 28px 64px rgba(15, 23, 42, 0.18),
-          inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        transition: box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1);
       }
 
-      .command-shell::before {
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        border-bottom: 1px solid rgba(16, 37, 31, 0.16);
+        background: rgba(246, 247, 242, 0.92);
+        backdrop-filter: blur(14px);
+      }
+
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        max-width: 1180px;
+        height: 68px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .brand-mark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        background: #10251f;
+        color: #d8b45f;
+        font-size: 0.82rem;
+        font-weight: 800;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        color: #30453e;
+        font-size: 0.95rem;
+        font-weight: 650;
+      }
+
+      .nav-links a {
+        border-bottom: 2px solid transparent;
+      }
+
+      .nav-links a:hover {
+        border-bottom-color: #d8b45f;
+      }
+
+      .section {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 96px 24px;
+      }
+
+      .hero {
+        position: relative;
+        border-bottom: 1px solid rgba(16, 37, 31, 0.14);
+      }
+
+      .hero::before {
         content: "";
         position: absolute;
         inset: 0;
-        background: linear-gradient(180deg, rgba(39, 39, 42, 0.22), rgba(9, 9, 11, 0));
+        background-image:
+          linear-gradient(90deg, rgba(16, 37, 31, 0.07) 1px, transparent 1px),
+          linear-gradient(180deg, rgba(16, 37, 31, 0.07) 1px, transparent 1px);
+        background-size: 56px 56px;
+        mask-image: linear-gradient(180deg, #000 0%, transparent 82%);
         pointer-events: none;
       }
 
-      .command-shell:hover {
-        box-shadow:
-          0 1px 2px rgba(0, 0, 0, 0.14),
-          0 14px 36px rgba(15, 23, 42, 0.20),
-          0 32px 72px rgba(15, 23, 42, 0.22),
-          inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      .hero-grid {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 0.92fr) minmax(460px, 1.08fr);
+        align-items: center;
+        gap: 54px;
+        min-height: calc(100vh - 68px);
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 68px 24px 78px;
       }
 
-      .agent-chip {
+      .eyebrow {
+        display: inline-flex;
+        width: fit-content;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 26px;
+        padding: 8px 12px;
+        border: 1px solid rgba(16, 37, 31, 0.22);
+        border-radius: 8px;
+        background: #ffffff;
+        color: #30453e;
+        font-size: 0.82rem;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        background: #2f7d69;
+        box-shadow: 16px 0 0 #b7472a, 32px 0 0 #315fb5;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 780px;
+        color: #10251f;
+        font-size: 4.7rem;
+        font-weight: 850;
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      .hero-copy {
+        margin-top: 26px;
+        max-width: 690px;
+        color: #30453e;
+        font-size: 1.22rem;
+        font-weight: 520;
+        line-height: 1.68;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 34px;
+      }
+
+      .button {
         display: inline-flex;
         align-items: center;
-        gap: 0.5rem;
-        margin: 0;
-        padding: 0.5rem 0.85rem;
-        border: 1px solid rgba(228, 228, 231, 1);
-        border-radius: 9999px;
-        background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.95),
-          0 1px 2px rgba(15, 23, 42, 0.06),
-          0 10px 24px rgba(15, 23, 42, 0.06);
-        font-size: 0.95rem;
+        justify-content: center;
+        min-height: 46px;
+        padding: 0 18px;
+        border: 2px solid #10251f;
+        border-radius: 8px;
+        font-size: 0.96rem;
+        font-weight: 800;
         line-height: 1;
-        transition:
-          transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
-          border-color 200ms ease,
-          background 200ms ease,
-          box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1);
       }
 
-      .agent-chip:hover {
+      .button.primary {
+        background: #10251f;
+        color: #f6f7f2;
+      }
+
+      .button.secondary {
+        background: #ffffff;
+        color: #10251f;
+      }
+
+      .button:hover {
         transform: translateY(-1px);
-        border-color: rgba(212, 212, 216, 1);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 1),
-          0 2px 4px rgba(15, 23, 42, 0.07),
-          0 16px 32px rgba(15, 23, 42, 0.10);
+        box-shadow: 5px 5px 0 #d8b45f;
       }
 
-      .agent-chip img {
-        width: 1rem;
-        height: 1rem;
-        flex-shrink: 0;
+      .command {
+        margin-top: 34px;
+        max-width: 720px;
+        border: 2px solid #10251f;
+        border-radius: 8px;
+        background: #101312;
+        color: #e8ede4;
+        box-shadow: 10px 10px 0 #2f7d69;
+        overflow: hidden;
+      }
+
+      .command-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(246, 247, 242, 0.18);
+        padding: 10px 14px;
+        color: #a7b5ae;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.82rem;
+      }
+
+      .command pre {
+        margin: 0;
+        overflow-x: auto;
+        padding: 18px;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.92rem;
+        line-height: 1.75;
+        white-space: pre-wrap;
+      }
+
+      .studio-frame {
+        border: 2px solid #10251f;
+        border-radius: 8px;
+        background: #ffffff;
+        box-shadow: 14px 14px 0 #d8b45f;
+        overflow: hidden;
+      }
+
+      .studio-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 2px solid #10251f;
+        background: #10251f;
+        color: #f6f7f2;
+        padding: 12px 14px;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.82rem;
+      }
+
+      .studio-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .studio-status::before {
+        content: "";
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: #d8b45f;
+      }
+
+      .studio-layout {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        min-height: 560px;
+      }
+
+      .studio-menu {
+        border-right: 2px solid #10251f;
+        background: #f9faf4;
+        padding: 14px;
+      }
+
+      .menu-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 34px;
+        margin-bottom: 8px;
+        padding: 0 10px;
+        border-radius: 8px;
+        color: #30453e;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.86rem;
+        font-weight: 700;
+      }
+
+      .menu-item.active {
+        border: 1px solid #10251f;
+        background: #d8b45f;
+        color: #10251f;
+      }
+
+      .studio-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(190px, 0.62fr);
+        gap: 12px;
+        padding: 14px;
+        background: #ffffff;
+      }
+
+      .studio-pane {
+        border: 1px solid rgba(16, 37, 31, 0.28);
+        border-radius: 8px;
+        background: #fbfcf7;
+        overflow: hidden;
+      }
+
+      .studio-pane-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(16, 37, 31, 0.18);
+        padding: 10px 12px;
+        color: #30453e;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.76rem;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .studio-pane-body {
+        padding: 12px;
+      }
+
+      .provider-row {
+        display: grid;
+        grid-template-columns: 90px 1fr;
+        gap: 10px;
+        align-items: start;
+        padding: 11px 0;
+        border-bottom: 1px solid rgba(16, 37, 31, 0.14);
+      }
+
+      .provider-row:last-child {
+        border-bottom: 0;
+      }
+
+      .provider-name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #10251f;
+        font-size: 0.9rem;
+        font-weight: 850;
+      }
+
+      .provider-name img {
+        width: 22px;
+        height: 22px;
         object-fit: contain;
       }
 
-      .agent-chip .agent-chip-codex-logo {
-        width: 1.08rem;
-        height: 1.08rem;
-        border-radius: 0.3em;
-      }
-
-      .agent-chip-row {
+      .provider-meta {
         display: flex;
         flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .tag {
+        display: inline-flex;
         align-items: center;
-        gap: 0.75rem;
+        min-height: 24px;
+        padding: 0 8px;
+        border-radius: 6px;
+        background: #e7f1ea;
+        color: #244f43;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.72rem;
+        font-weight: 800;
       }
 
-      .dark .agent-chip {
-        border-color: rgba(63, 63, 70, 0.95);
-        background: linear-gradient(180deg, rgba(39, 39, 42, 0.95) 0%, rgba(24, 24, 27, 0.95) 100%);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 1px 2px rgba(0, 0, 0, 0.30),
-          0 10px 24px rgba(0, 0, 0, 0.24);
+      .tag.red {
+        background: #f7e7df;
+        color: #7c331e;
       }
 
-      .dark .agent-chip:hover {
-        border-color: rgba(82, 82, 91, 1);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.08),
-          0 2px 4px rgba(0, 0, 0, 0.32),
-          0 16px 32px rgba(0, 0, 0, 0.32);
+      .tag.blue {
+        background: #e6eefb;
+        color: #254b93;
       }
 
-      .video-glow {
-        position: absolute;
-        inset: -22% -16% -16% -16%;
-        border-radius: 9999px;
-        pointer-events: none;
-        background:
-          radial-gradient(55% 65% at 70% 30%, rgba(249, 115, 22, 0.55), rgba(249, 115, 22, 0.14) 45%, rgba(249, 115, 22, 0) 78%),
-          radial-gradient(50% 60% at 30% 75%, rgba(37, 99, 235, 0.45), rgba(37, 99, 235, 0.10) 50%, rgba(37, 99, 235, 0) 78%);
-        filter: blur(36px);
-        opacity: 1;
-        z-index: 0;
+      .meter-row {
+        display: grid;
+        grid-template-columns: 84px 1fr 54px;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.76rem;
       }
 
-      .dark .video-glow {
-        background:
-          radial-gradient(55% 65% at 70% 30%, rgba(251, 146, 60, 0.55), rgba(251, 146, 60, 0.10) 45%, rgba(251, 146, 60, 0) 78%),
-          radial-gradient(50% 60% at 30% 75%, rgba(96, 165, 250, 0.40), rgba(96, 165, 250, 0.08) 50%, rgba(96, 165, 250, 0) 78%);
-        opacity: 0.95;
-      }
-
-      .hero-video {
-        position: relative;
-        width: 100%;
-        max-width: 32rem;
-        border-radius: 1.25rem;
+      .meter {
+        height: 8px;
+        border-radius: 999px;
+        background: #dfe5dc;
         overflow: hidden;
-        border: 1px solid rgba(228, 228, 231, 0.95);
-        background: linear-gradient(180deg, #ffffff, #f7f7f8);
-        box-shadow:
-          0 1px 2px rgba(15, 23, 42, 0.06),
-          0 12px 28px rgba(15, 23, 42, 0.08),
-          0 32px 64px rgba(15, 23, 42, 0.10);
-        z-index: 1;
       }
 
-      .dark .hero-video {
-        border-color: rgba(63, 63, 70, 0.7);
-        background: linear-gradient(180deg, #18181b, #0c0d10);
-        box-shadow:
-          0 1px 2px rgba(0, 0, 0, 0.32),
-          0 12px 28px rgba(0, 0, 0, 0.32),
-          0 32px 64px rgba(0, 0, 0, 0.42);
-      }
-
-      .hero-video > video {
+      .meter span {
         display: block;
-        width: 100%;
-        height: auto;
+        height: 100%;
+        border-radius: inherit;
+        background: #2f7d69;
       }
 
-      .section-divider {
-        height: 1px;
-        max-width: 36rem;
+      .tool-log {
+        display: grid;
+        gap: 8px;
+        margin-top: 14px;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.76rem;
+      }
+
+      .tool-log div {
+        padding: 8px;
+        border-radius: 6px;
+        background: #101312;
+        color: #e8ede4;
+      }
+
+      .below-hero {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        padding-top: 0;
+      }
+
+      .signal {
+        min-height: 116px;
+        border: 1px solid rgba(16, 37, 31, 0.2);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 18px;
+      }
+
+      .signal strong {
+        display: block;
+        margin-bottom: 8px;
+        color: #10251f;
+        font-size: 1rem;
+      }
+
+      .signal span {
+        color: #587067;
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+
+      .section-kicker {
+        margin-bottom: 16px;
+        color: #2f7d69;
+        font-size: 0.82rem;
+        font-weight: 850;
+        text-transform: uppercase;
+      }
+
+      h2 {
+        max-width: 760px;
+        font-size: 3rem;
+        font-weight: 850;
+        line-height: 1.04;
+        letter-spacing: 0;
+      }
+
+      .section-intro {
+        max-width: 760px;
+        margin-top: 18px;
+        color: #30453e;
+        font-size: 1.08rem;
+        line-height: 1.7;
+      }
+
+      .workflows {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 36px;
+      }
+
+      .workflow {
+        min-height: 220px;
+        border: 2px solid #10251f;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 20px;
+        box-shadow: 6px 6px 0 #d8b45f;
+      }
+
+      .workflow h3 {
+        margin-bottom: 14px;
+        font-size: 1.1rem;
+        font-weight: 850;
+      }
+
+      .workflow p {
+        color: #30453e;
+        font-size: 0.96rem;
+        line-height: 1.62;
+      }
+
+      .capability-band {
+        background: #10251f;
+        color: #f6f7f2;
+      }
+
+      .capability-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(420px, 1.1fr);
+        gap: 42px;
+        align-items: center;
+      }
+
+      .capability-band .section-kicker {
+        color: #d8b45f;
+      }
+
+      .capability-band .section-intro {
+        color: #c7d5ce;
+      }
+
+      .flag-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .flag {
+        display: flex;
+        align-items: center;
+        min-height: 46px;
+        border: 1px solid rgba(246, 247, 242, 0.22);
+        border-radius: 8px;
+        background: rgba(246, 247, 242, 0.07);
+        padding: 0 12px;
+        color: #f6f7f2;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.84rem;
+      }
+
+      .linear-board {
+        display: grid;
+        grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+        gap: 24px;
+        margin-top: 42px;
+        align-items: stretch;
+      }
+
+      .linear-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .linear-step {
+        display: grid;
+        grid-template-columns: 44px 1fr;
+        gap: 14px;
+        align-items: start;
+        border: 1px solid rgba(16, 37, 31, 0.18);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 16px;
+      }
+
+      .step-index {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 8px;
+        background: #2f7d69;
+        color: #ffffff;
+        font-weight: 850;
+      }
+
+      .linear-step strong {
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .linear-step p {
+        color: #587067;
+        font-size: 0.94rem;
+        line-height: 1.55;
+      }
+
+      .delivery-console {
+        border: 2px solid #10251f;
+        border-radius: 8px;
+        background: #101312;
+        color: #e8ede4;
+        overflow: hidden;
+      }
+
+      .delivery-console pre {
+        margin: 0;
+        overflow-x: auto;
+        padding: 20px;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.88rem;
+        line-height: 1.8;
+        white-space: pre-wrap;
+      }
+
+      .install {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 0.68fr);
+        gap: 28px;
+        align-items: start;
+      }
+
+      .install-panel {
+        border: 2px solid #10251f;
+        border-radius: 8px;
+        background: #ffffff;
+        overflow: hidden;
+      }
+
+      .install-panel pre {
+        margin: 0;
+        padding: 20px;
+        overflow-x: auto;
+        font-family: var(--font-geist-mono), ui-monospace, monospace;
+        font-size: 0.9rem;
+        line-height: 1.75;
+        white-space: pre-wrap;
+      }
+
+      .facts {
+        display: grid;
+        gap: 12px;
+      }
+
+      .fact {
+        border: 1px solid rgba(16, 37, 31, 0.18);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 16px;
+      }
+
+      .fact strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .fact span {
+        color: #587067;
+        font-size: 0.93rem;
+        line-height: 1.5;
+      }
+
+      .footer {
+        border-top: 1px solid rgba(16, 37, 31, 0.16);
+        padding: 34px 24px;
+        color: #587067;
+      }
+
+      .footer-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        max-width: 1180px;
         margin: 0 auto;
-        background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.32) 35%, rgba(249, 115, 22, 0.32) 65%, transparent);
+        font-size: 0.92rem;
       }
 
-      .dark .section-divider {
-        background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.36) 35%, rgba(251, 146, 60, 0.36) 65%, transparent);
+      .footer-links {
+        display: flex;
+        gap: 18px;
+        font-weight: 750;
       }
 
-      .features-dl > div {
-        position: relative;
+      .stagger-fade,
+      .stagger-fade-group > * {
+        --stagger-fade-y: 12px;
       }
 
-      .features-dl dt {
-        position: relative;
-        padding-left: 1.4rem;
+      @media (max-width: 1020px) {
+        .hero-grid,
+        .capability-grid,
+        .linear-board,
+        .install {
+          grid-template-columns: 1fr;
+        }
+
+        .hero-grid {
+          min-height: auto;
+          padding-top: 58px;
+        }
+
+        .studio-frame {
+          max-width: 720px;
+        }
+
+        .below-hero,
+        .workflows {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        h1 {
+          font-size: 3.7rem;
+        }
+
+        h2 {
+          font-size: 2.55rem;
+        }
       }
 
-      .features-dl dt::before {
-        content: "";
-        position: absolute;
-        left: 0;
-        top: 0.42rem;
-        width: 0.55rem;
-        height: 0.55rem;
-        border-radius: 9999px;
-        background: linear-gradient(135deg, #60a5fa 0%, #2563eb 100%);
-        box-shadow:
-          0 0 0 4px rgba(59, 130, 246, 0.12),
-          0 1px 2px rgba(37, 99, 235, 0.30);
-      }
+      @media (max-width: 720px) {
+        .nav-inner {
+          height: auto;
+          min-height: 64px;
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 12px;
+          padding: 14px 18px;
+        }
 
-      .features-dl dd {
-        padding-left: 1.4rem;
-      }
+        .nav-links {
+          width: 100%;
+          justify-content: space-between;
+          gap: 10px;
+          font-size: 0.85rem;
+        }
 
-      .features-dl dd code {
-        padding: 0.08rem 0.32rem;
-        border-radius: 0.32rem;
-        background: rgba(244, 244, 245, 1);
-        border: 1px solid rgba(228, 228, 231, 1);
-        color: #18181b;
-        font-size: 0.85em;
-      }
+        .section {
+          padding: 70px 18px;
+        }
 
-      .dark .features-dl dd code {
-        background: rgba(39, 39, 42, 0.7);
-        border-color: rgba(63, 63, 70, 0.7);
-        color: #e4e4e7;
-      }
+        .hero-grid {
+          padding: 42px 18px 58px;
+        }
 
-      .dark .features-dl dt::before {
-        background: linear-gradient(135deg, #93c5fd 0%, #3b82f6 100%);
-        box-shadow:
-          0 0 0 4px rgba(96, 165, 250, 0.16),
-          0 1px 2px rgba(0, 0, 0, 0.30);
-      }
+        h1 {
+          font-size: 2.65rem;
+          line-height: 1.02;
+        }
 
+        h2 {
+          font-size: 2rem;
+        }
+
+        .hero-copy,
+        .section-intro {
+          font-size: 1rem;
+        }
+
+        .studio-layout,
+        .studio-main {
+          grid-template-columns: 1fr;
+        }
+
+        .studio-menu {
+          border-right: 0;
+          border-bottom: 2px solid #10251f;
+        }
+
+        .below-hero,
+        .workflows,
+        .flag-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .studio-layout {
+          min-height: auto;
+        }
+
+        .footer-inner {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
     </style>
   </head>
-  <body class="overflow-x-hidden bg-white text-zinc-800 antialiased dark:bg-[#0b0d12] dark:text-zinc-200">
-    <nav class="relative z-20 backdrop-blur-md transition-colors">
-      <div class="stagger-fade-group max-w-6xl mx-auto px-6 py-4 flex items-center justify-between text-sm" style="--stagger-fade-base-delay: 20ms;">
-        <a href="/" class="flex items-center gap-2 text-zinc-950 font-medium transition-opacity hover:opacity-80 dark:text-zinc-100">
-          <Image
-            src={councilNavLogo}
-            alt=""
-            loading="eager"
-            class="size-6 [filter:drop-shadow(0_2px_4px_rgb(15_23_42/0.18))]"
-          />
-          Council
-        </a>
-        <div class="flex items-center gap-5 text-zinc-500 dark:text-zinc-400">
-          <a href={repoUrl} target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-zinc-950 dark:hover:text-zinc-100">GitHub</a>
-          <button
-            type="button"
-            onclick="toggleDarkMode()"
-            aria-label="Toggle dark mode"
-            class="relative flex h-8 w-8 items-center justify-center text-zinc-500 transition-colors duration-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            <svg class="absolute h-4 w-4 rotate-90 scale-0 opacity-0 transition-all duration-300 dark:rotate-0 dark:scale-100 dark:opacity-100" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="5"></circle>
-              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
-            </svg>
-            <svg class="absolute h-4 w-4 rotate-0 scale-100 opacity-100 transition-all duration-300 dark:rotate-90 dark:scale-0 dark:opacity-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"></path>
-            </svg>
-          </button>
+  <body>
+    <div class="page-shell">
+      <header class="nav">
+        <div class="nav-inner">
+          <a class="brand" href={pageUrl} aria-label="Amon Hen home">
+            <span class="brand-mark">AH</span>
+            <span>{siteName}</span>
+          </a>
+          <nav class="nav-links" aria-label="Primary navigation">
+            <a href="#studio">Studio</a>
+            <a href="#capabilities">Capabilities</a>
+            <a href="#linear">Linear</a>
+            <a href="#run">Run</a>
+          </nav>
         </div>
-      </div>
-    </nav>
+      </header>
 
-    <main class="relative">
-      <section class="relative pt-12 pb-8 md:pt-16 md:pb-12">
-        <div class="relative max-w-6xl mx-auto px-6">
-          <div class="grid items-center gap-12 md:grid-cols-2 md:gap-10 lg:gap-16">
-            <div class="text-center md:text-left">
-              <Image
-                src={councilHeroLogo}
-                alt=""
-                loading="eager"
-                fetchpriority="high"
-                class="stagger-fade size-16 mx-auto md:mx-0 mb-6 [filter:drop-shadow(0_12px_24px_rgb(37_99_235/0.22))_drop-shadow(0_4px_8px_rgb(15_23_42/0.15))]"
-                style="--stagger-fade-delay: 70ms;"
-              />
-              <h1 class="stagger-fade text-4xl sm:text-5xl md:text-[3.5rem] lg:text-6xl font-semibold tracking-[-0.025em] leading-[1.04] text-zinc-950 text-balance max-w-[18ch] mx-auto md:mx-0 dark:text-zinc-50" style="--stagger-fade-delay: 125ms;">
-                Ask three agents.
-                <span class="block mt-2 sm:mt-3">Get one answer.</span>
-              </h1>
-              <p class="stagger-fade mt-6 text-lg leading-[1.55] text-zinc-600 text-pretty max-w-[48ch] mx-auto md:mx-0 dark:text-zinc-400" style="--stagger-fade-delay: 180ms;">
-                Council runs Codex, Claude, and Gemini against the same prompt, coordinates them from a native Rust binary, and synthesizes one answer &mdash; using the subscriptions and local CLI setups you already have.
+      <main>
+        <section class="hero">
+          <div class="hero-grid">
+            <div class="stagger-fade-group">
+              <div class="eyebrow">Rust-native agent command center</div>
+              <h1>{siteName}</h1>
+              <p class="hero-copy">
+                Amon Hen coordinates Codex, Claude, Gemini, and Linear from one native terminal. Pick a planner, appoint a lead, hand work between providers, fan out real same-provider sub-agents, and keep the loop running until review or passing CI.
               </p>
-              <div class="stagger-fade mt-8 space-y-8" style="--stagger-fade-delay: 235ms;">
-                <div class="stagger-fade-group space-y-3" style="--stagger-fade-base-delay: 260ms;">
-                  <p class="text-xs font-mono uppercase tracking-[0.2em] text-zinc-400 dark:text-zinc-500">
-                    Works with
-                  </p>
-                  <div class="agent-chip-row justify-center md:justify-start text-zinc-950 font-medium dark:text-zinc-100" aria-label="Supported agents">
-                    <span class="agent-chip">
-                      <Image src={codexLogo} alt="" aria-hidden="true" width={36} height={36} class="agent-chip-codex-logo" />
-                      Codex
-                    </span>
-                    <span class="agent-chip">
-                      <Image src={claudeLogo} alt="" aria-hidden="true" width={32} height={32} />
-                      Claude
-                    </span>
-                    <span class="agent-chip">
-                      <img src="/agent-logos/gemini.svg" alt="" aria-hidden="true" />
-                      Gemini
-                    </span>
-                  </div>
+              <div class="hero-actions">
+                <a class="button primary" href="#run">Run the Studio</a>
+                <a class="button secondary" href={docsUrl} target="_blank" rel="noreferrer">Read CLI docs</a>
+              </div>
+              <div class="command" aria-label="Example command">
+                <div class="command-title">
+                  <span>terminal</span>
+                  <span>{examplePrompt}</span>
                 </div>
-                <div class="stagger-fade-group space-y-4" style="--stagger-fade-base-delay: 320ms;">
-                  <div
-                    class="command-shell rounded-2xl border text-left"
-                    data-command-box
-                    data-copy-text={`cargo install ${crateName} && ${crateName} ${examplePrompt}`}
-                  >
-                    <div class="relative z-10 flex items-center gap-3 px-5 py-4 sm:px-6 sm:py-5">
-                      <code class="flex-1 min-w-0 font-mono text-sm sm:text-[0.95rem] leading-7 text-zinc-100 break-words">
-                        <span class="select-none text-zinc-600">$</span>
-                        <span class="text-zinc-500"> cargo install</span>
-                        <span class="text-zinc-300"> {crateName}</span>
-                        <span class="text-zinc-500"> &&</span>
-                        <span class="text-zinc-300"> {crateName}</span>
-                        <span class="text-zinc-100"> {examplePrompt}</span>
-                      </code>
-                      <button
-                        type="button"
-                        class="shrink-0 inline-flex items-center gap-1.5 rounded-md bg-white/5 px-2.5 py-1.5 font-mono text-xs text-zinc-300 transition-colors hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-                        data-copy-command
-                        aria-label="Copy command"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="size-3.5">
-                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                        </svg>
-                        <span data-copy-label>Copy</span>
-                      </button>
-                    </div>
-                  </div>
-                  <div class="relative z-10 flex flex-col items-center justify-between gap-3 text-sm text-zinc-500 dark:text-zinc-400 sm:flex-row">
-                    <p>Free and open source. MIT licensed.</p>
-                    <a
-                      href={repoUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label="GitHub"
-                      class="inline-flex items-center text-zinc-500 transition-colors hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true" class="size-4 fill-current">
-                        <path d="M12 .297a12 12 0 0 0-3.79 23.39c.6.11.82-.258.82-.577v-2.234c-3.338.726-4.042-1.61-4.042-1.61a3.182 3.182 0 0 0-1.338-1.756c-1.093-.747.084-.732.084-.732a2.52 2.52 0 0 1 1.84 1.237 2.554 2.554 0 0 0 3.49.996 2.553 2.553 0 0 1 .762-1.6c-2.665-.304-5.466-1.334-5.466-5.932a4.64 4.64 0 0 1 1.235-3.22 4.31 4.31 0 0 1 .117-3.176s1.008-.322 3.3 1.23a11.46 11.46 0 0 1 6.006 0c2.292-1.552 3.297-1.23 3.297-1.23a4.31 4.31 0 0 1 .12 3.176 4.63 4.63 0 0 1 1.233 3.22c0 4.61-2.805 5.625-5.478 5.922a2.862 2.862 0 0 1 .814 2.222v3.293c0 .321.216.694.825.576A12 12 0 0 0 12 .297" />
-                      </svg>
-                    </a>
-                  </div>
-                </div>
+                <pre><code>cargo run -p council -- --studio --members codex,claude,gemini</code></pre>
               </div>
             </div>
-            <div class="stagger-fade relative" style="--stagger-fade-delay: 320ms;">
-              <div class="video-glow" aria-hidden="true"></div>
-              <div class="hero-video mx-auto md:ml-auto md:mr-0">
-                <video
-                  autoplay
-                  muted
-                  loop
-                  playsinline
-                  preload="metadata"
-                  poster="/hero/council-hero.jpg"
-                  aria-hidden="true"
-                  tabindex="-1"
-                  data-hero-video
-                >
-                  <source src="/hero/council-hero.av1.mp4" type='video/mp4; codecs="av01.0.08M.08"' />
-                  <source src="/hero/council-hero.mp4" type='video/mp4; codecs="avc1.640029"' />
-                </video>
+
+            <div class="studio-frame stagger-fade" id="studio">
+              <div class="studio-topbar">
+                <span>Amon Hen Studio</span>
+                <span class="studio-status">interactive</span>
+              </div>
+              <div class="studio-layout">
+                <aside class="studio-menu" aria-label="Studio menu preview">
+                  <div class="menu-item active">Settings <span>enter</span></div>
+                  <div class="menu-item">Agents <span>3</span></div>
+                  <div class="menu-item">Linear <span>on</span></div>
+                  <div class="menu-item">Auth <span>tabs</span></div>
+                  <div class="menu-item">Files <span>@</span></div>
+                  <div class="menu-item">Tools <span>logs</span></div>
+                  <div class="menu-item">Help <span>?</span></div>
+                </aside>
+                <div class="studio-main">
+                  <section class="studio-pane">
+                    <div class="studio-pane-title">
+                      <span>Providers</span>
+                      <span>lead: claude</span>
+                    </div>
+                    <div class="studio-pane-body">
+                      {providerRows.map(([name, logo, role, model, effort, capability], index) => (
+                        <div class="provider-row">
+                          <div class="provider-name">
+                            <img src={logo} alt={`${name} logo`} />
+                            <span>{name}</span>
+                          </div>
+                          <div class="provider-meta">
+                            <span class:list={["tag", index === 1 && "red", index === 2 && "blue"]}>{role}</span>
+                            <span class="tag">{model}</span>
+                            <span class="tag">{effort}</span>
+                            <span class:list={["tag", index === 1 && "red", index === 2 && "blue"]}>{capability}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                  <section class="studio-pane">
+                    <div class="studio-pane-title">
+                      <span>Telemetry</span>
+                      <span>live</span>
+                    </div>
+                    <div class="studio-pane-body">
+                      <div class="meter-row"><span>codex</span><div class="meter"><span style="width: 72%"></span></div><span>18k</span></div>
+                      <div class="meter-row"><span>claude</span><div class="meter"><span style="width: 84%"></span></div><span>24k</span></div>
+                      <div class="meter-row"><span>gemini</span><div class="meter"><span style="width: 58%"></span></div><span>13k</span></div>
+                      <div class="tool-log">
+                        <div>$ git status --short</div>
+                        <div>$ cargo test --workspace</div>
+                        <div>Linear: attach media + comment</div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <div class="max-w-6xl mx-auto px-6"><div class="section-divider" aria-hidden="true"></div></div>
+        <section class="section below-hero" aria-label="Project signals">
+          <div class="signal">
+            <strong>Native Rust</strong>
+            <span>No tracked npm CLI core. The orchestration path is a Cargo workspace and native binary.</span>
+          </div>
+          <div class="signal">
+            <strong>Provider control</strong>
+            <span>Model, effort, auth, sandbox, MCP, Skills, tools, and permission controls per provider.</span>
+          </div>
+          <div class="signal">
+            <strong>Studio UI</strong>
+            <span>Selectable panes, settings, help, auth onboarding, Linear management, files, and command tools.</span>
+          </div>
+          <div class="signal">
+            <strong>Delivery loop</strong>
+            <span>Project and epic polling, isolated workspaces, retries, reconciliation, and review or CI gates.</span>
+          </div>
+        </section>
 
-      <section class="pt-12 pb-24 md:pt-16 md:pb-28">
-        <div class="max-w-6xl mx-auto px-6">
-          <div class="stagger-fade-group" style="--stagger-fade-base-delay: 420ms;">
-            <p class="mx-auto max-w-3xl text-center text-lg leading-8 text-zinc-700 text-balance dark:text-zinc-300">
-              Three models, three sets of blind spots. Council lets you choose a lead, planner, executors, real provider sub-agents, handoffs, iterations, managed social-login auth, Linear delivery, and the local tools each provider already knows how to use.
+        <section class="section">
+          <div class="section-kicker">What changed</div>
+          <h2>A control plane for actual agent work, not just answer comparison.</h2>
+          <p class="section-intro">
+            Amon Hen keeps the useful parts of consulting multiple models, then adds the work surfaces the project needs: social login bootstrap, provider capability management, local file tagging, shell command visibility, media attachments, Linear execution loops, and token/tool telemetry that stays visible while agents run.
+          </p>
+          <div class="workflows">
+            {workflowCards.map(([heading, body]) => (
+              <article class="workflow">
+                <h3>{heading}</h3>
+                <p>{body}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section class="capability-band" id="capabilities">
+          <div class="section capability-grid">
+            <div>
+              <div class="section-kicker">Provider capabilities</div>
+              <h2>Inherit the local CLI. Override the exact pieces you need.</h2>
+              <p class="section-intro">
+                Codex, Claude, and Gemini each have their own auth story, MCP surface, tool policy, and config files. Amon Hen exposes those differences instead of flattening them away, so Studio and CLI runs can switch between inherited provider config and task-specific overrides.
+              </p>
+            </div>
+            <div class="flag-grid" aria-label="Provider capability flags">
+              {capabilityFlags.map((flag) => <div class="flag">{flag}</div>)}
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="linear">
+          <div class="section-kicker">Linear autonomous delivery</div>
+          <h2>Point it at a project or epic and keep the loop moving.</h2>
+          <p class="section-intro">
+            Amon Hen can poll Linear, pick eligible work, allocate planner/lead/executor phases, create isolated workspaces, run provider teams, attach generated media, update tickets, and reconcile retries until the configured completion gate is met.
+          </p>
+          <div class="linear-board">
+            <div class="linear-list">
+              {linearSteps.map(([heading, body], index) => (
+                <article class="linear-step">
+                  <div class="step-index">{index + 1}</div>
+                  <div>
+                    <strong>{heading}</strong>
+                    <p>{body}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <div class="delivery-console" aria-label="Linear delivery command">
+              <pre><code>council \
+  --deliver-linear \
+  --linear-project ENG \
+  --linear-until-complete \
+  --linear-completion-gate review-or-ci \
+  --members codex,claude,gemini \
+  --planner codex \
+  --lead claude \
+  --team-work 2</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="section install" id="run">
+          <div>
+            <div class="section-kicker">Run it locally</div>
+            <h2>The project ships as a Rust CLI with a native Studio.</h2>
+            <p class="section-intro">
+              Install from the checkout, confirm provider auth, then run the interactive Studio or a scripted delivery command. Social login flows can open browser tabs and return through code paste or deeplink, depending on the provider.
             </p>
-            <div class="mt-12 md:mt-16 rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900/40">
-              <div class="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-                <div class="rounded-xl border border-zinc-200 bg-white p-4 font-mono text-[0.8rem] leading-6 text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
-                  <div class="mb-3 flex items-center justify-between gap-3 border-b border-zinc-200 pb-3 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">
-                    <span>Council Studio</span>
-                    <span>lead claude · planner codex · handoff on</span>
-                  </div>
-                  <div class="grid gap-3 sm:grid-cols-3">
-                    <div>
-                      <p class="text-zinc-500 dark:text-zinc-500">menu</p>
-                      <p>Social login</p>
-                      <p>Auth status</p>
-                      <p>Linear status</p>
-                      <p>Capabilities</p>
-                    </div>
-                    <div>
-                      <p class="text-zinc-500 dark:text-zinc-500">linear</p>
-                      <p>auth: configured</p>
-                      <p>mode: watch</p>
-                      <p>team: ENG</p>
-                      <p>comments: on</p>
-                    </div>
-                    <div>
-                      <p class="text-zinc-500 dark:text-zinc-500">telemetry</p>
-                      <p>codex tok:~8.4k tools:3 subs:2</p>
-                      <p>claude tok:12.1k tools:2 subs:2</p>
-                      <p>gemini tok:~6.7k tools:1</p>
-                      <p>cmds:4</p>
-                    </div>
-                  </div>
-                </div>
-                <div class="grid gap-3 text-sm">
-                  <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                    <h2 class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Native by default</h2>
-                    <p class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Run provider consultations, change auth and permissions, manage Skills/MCP/Tools overrides, tag files, run prompt commands, inspect JSON, and use the native Studio TUI without relying on the removed npm CLI.</p>
-                  </div>
-                  <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                    <h2 class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Linear migration path</h2>
-                    <p class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Target Linear issues, projects, and epics from the native CLI with isolated workspaces, persisted state, retry/reconciliation, comments back to Linear, optional review-state updates, media attachments, and review or CI completion gates.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="mt-16 max-w-3xl mx-auto md:mt-20">
-              <h2 class="font-mono text-xs tracking-[0.18em] uppercase text-zinc-500 mb-6 dark:text-zinc-500">Features</h2>
-              <dl class="features-dl stagger-fade-group space-y-6 text-sm" style="--stagger-fade-base-delay: 510ms;">
-                <div>
-                  <dt class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Works with what you&apos;ve already got</dt>
-                  <dd class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Detects <code>codex</code>, <code>claude</code>, and <code>gemini</code> on your <code>PATH</code> and runs whichever subset is there. Each provider can inherit local config or use managed override flags for native tools, skills, MCP servers, agents, plugins, policies, and extensions.</dd>
-                </div>
-                <div>
-                  <dt class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Coordination without glue scripts</dt>
-                  <dd class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Select a lead, planner, executors, auth method, sandbox, permission mode, model, effort, iterations, handoffs, provider sub-agent counts, tagged files, and prompt commands from the native CLI.</dd>
-                </div>
-                <div>
-                  <dt class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Social login without leaving the flow</dt>
-                  <dd class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Launch Codex, Claude, and Gemini auth flows from the CLI, check provider auth status, choose Claude login mode, and keep browser tabs, deeplink callbacks, local callbacks, and pasted verification codes connected to the provider CLI doing the login.</dd>
-                </div>
-                <div>
-                  <dt class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Linear delivery loop</dt>
-                  <dd class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Poll Linear, target issues by project or epic, prepare isolated workspaces, run phased council delivery, persist retry state, post delivery comments, attach media, optionally move review state, and finish on human-review or GitHub CI gates.</dd>
-                </div>
-                <div>
-                  <dt class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Telemetry you can inspect</dt>
-                  <dd class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Provider rows and JSON results include provider token usage, estimated usage when provider numbers are missing, sub-agent usage, prompt command telemetry, and tool calls extracted from upstream provider progress streams.</dd>
-                </div>
-                <div>
-                  <dt class="text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">Still fits automation</dt>
-                  <dd class="mt-2 leading-relaxed text-zinc-600 dark:text-zinc-400">Pipe stdin with <code>echo &quot;...&quot; | council</code>, get structured output with <code>--json</code> or <code>--json-stream</code>, skip the dashboard with <code>--headless</code>, or embed the Rust crate from a larger native workflow.</dd>
-                </div>
-              </dl>
+            <div class="install-panel" aria-label="Install commands">
+              <pre><code>cargo install --path crates/council
+council --auth-status --capabilities-status
+council --studio --members codex,claude,gemini
+council --members codex,claude,gemini --team-work 2 "Inspect this repo"</code></pre>
             </div>
           </div>
+          <div class="facts">
+            <div class="fact">
+              <strong>Binary</strong>
+              <span>`council` remains the compatibility command while the project identity moves to Amon Hen.</span>
+            </div>
+            <div class="fact">
+              <strong>Website</strong>
+              <span>Built from scratch for this rewrite and deployed as a Cloudflare Worker on `amonhen.legit.place`.</span>
+            </div>
+            <div class="fact">
+              <strong>Repository</strong>
+              <span>Main development lives in the Dviros fork, with upstream kept only as inspiration and lineage.</span>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="footer-inner">
+          <span>Amon Hen is an independent Rust-native AI delivery studio by Dviros.</span>
+          <div class="footer-links">
+            <a href={repoUrl} target="_blank" rel="noreferrer">GitHub</a>
+            <a href={docsUrl} target="_blank" rel="noreferrer">Docs</a>
+            <a href={crateUrl} target="_blank" rel="noreferrer">Crate</a>
+          </div>
         </div>
-      </section>
-    </main>
-
-    <footer class="pb-12 pt-8 border-t border-zinc-200 transition-colors dark:border-zinc-800">
-      <div class="stagger-fade-group max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-zinc-500 dark:text-zinc-400" style="--stagger-fade-base-delay: 620ms;">
-        <span>&copy; 2026 <a href="https://armstr.ng" target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-zinc-950 dark:hover:text-zinc-100">Colin Armstrong</a></span>
-        <div class="flex items-center gap-6">
-          <a href={repoUrl} target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-zinc-950 dark:hover:text-zinc-100">GitHub</a>
-          <a href={xUrl} target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-zinc-950 dark:hover:text-zinc-100">@colinarms</a>
-        </div>
-      </div>
-    </footer>
-
-    <script is:inline>
-      const commandBox = document.querySelector("[data-command-box]");
-      const copyTargets = commandBox?.querySelectorAll("[data-copy-command]") ?? [];
-
-      if (commandBox) {
-        const copyText = commandBox.getAttribute("data-copy-text") || "";
-        const copyCommand = async () => {
-          try {
-            await navigator.clipboard.writeText(copyText);
-          } catch {
-            const input = document.createElement("input");
-            input.value = copyText;
-            document.body.appendChild(input);
-            input.select();
-            document.execCommand("copy");
-            input.remove();
-          }
-
-          copyTargets.forEach((target) => {
-            const labelEl = target.querySelector("[data-copy-label]");
-            if (!labelEl) return;
-            const original = labelEl.textContent || "Copy";
-            labelEl.textContent = "Copied";
-            window.setTimeout(() => {
-              labelEl.textContent = original;
-            }, 1400);
-          });
-        };
-
-        copyTargets.forEach((target) => {
-          target.addEventListener("click", copyCommand);
-        });
-      }
-
-      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        document.querySelectorAll("video[data-hero-video]").forEach((video) => {
-          video.removeAttribute("autoplay");
-          video.removeAttribute("loop");
-          video.pause();
-        });
-      }
-    </script>
-
-    <script is:inline define:vars={{ GA_MEASUREMENT_ID }}>
-      window.dataLayer = window.dataLayer || [];
-      function gtag() { dataLayer.push(arguments); }
-      gtag("js", new Date());
-      gtag("config", GA_MEASUREMENT_ID, { page_path: window.location.pathname });
-      var s = document.createElement("script");
-      s.src = "https://www.googletagmanager.com/gtag/js?id=" + GA_MEASUREMENT_ID;
-      s.async = true;
-      document.body.appendChild(s);
-    </script>
+      </footer>
+    </div>
   </body>
 </html>

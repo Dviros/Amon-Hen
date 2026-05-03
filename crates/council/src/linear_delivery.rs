@@ -2406,8 +2406,8 @@ mod tests {
     #[test]
     fn extracts_github_pr_urls() {
         assert_eq!(
-            extract_github_pr_url("Ready: https://github.com/seeARMS/council/pull/7."),
-            Some("https://github.com/seeARMS/council/pull/7".to_string())
+            extract_github_pr_url("Ready: https://github.com/Dviros/council/pull/7."),
+            Some("https://github.com/Dviros/council/pull/7".to_string())
         );
     }
 

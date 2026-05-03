@@ -4,7 +4,7 @@ import cloudflare from '@astrojs/cloudflare';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  site: 'https://council.armstr.ng',
+  site: 'https://amonhen.legit.place',
   integrations: [],
   fonts: [
     {

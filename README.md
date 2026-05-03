@@ -1,63 +1,142 @@
-# council
+# Amon Hen
 
-A small open-source CLI that asks multiple AI coding CLIs (`codex`, `claude`, `gemini`) the same question and synthesizes their answers into one final response. It can run the tools in parallel, or coordinate planner/lead/executor workflows with handoffs, iterations, and real provider sub-agent teams.
+Rust-native orchestration for Codex, Claude, and Gemini.
 
-This repo holds two things:
+Amon Hen is named after the Seat of Seeing: one place to bring multiple agents into view, let them plan, execute, hand off, and converge on a deliverable result. The shipped binary is still `council` for compatibility, but the project direction is now Amon Hen: a native Rust control plane for provider CLIs, autonomous Linear delivery, and an interactive terminal studio.
 
-- [`crates/council/`](./crates/council) — the native Rust `council` CLI
-- [`web/`](./web) — the landing page hosted at [council.armstr.ng](https://council.armstr.ng)
+This repository is a ground-up Rust rewrite. The old npm CLI core is gone from the tracked project. Node is used only for the separate Astro marketing site under `web/`.
 
-## Prerequisites
+## What It Does
 
-- Rust stable for the native CLI
-- Node `>=22` only for the Astro web app
-- For the CLI itself: at least one supported upstream CLI installed and authenticated
-  Supported CLIs today: `codex`, `claude`, `gemini`
+- Consults Codex, Claude, and Gemini from their authenticated local CLIs.
+- Lets you choose a lead model, planner model, executors, handoff behavior, and iteration count.
+- Supports provider-specific model, effort, auth, permission, sandbox, MCP, Skills, and tool configuration.
+- Runs real same-provider sub-agent fanout with `--team-work` and per-provider team sizing.
+- Shows prompt file tags, prompt command usage, provider tool usage, sub-agent activity, and token telemetry.
+- Provides a native Rust Studio TUI with editable settings, movable panes, auth onboarding, Linear setup/status, provider capabilities, and double-Ctrl+C exit.
+- Runs Linear project or epic delivery loops with isolated issue workspaces, retries, reconciliation, observability, comments, media attachments, and review or CI completion gates.
 
-If none of those CLIs are installed or authenticated, `council` cannot produce a real answer.
+## Repository Layout
 
-## Quick start
+- [`crates/council/`](./crates/council) - the Rust crate and `council` binary.
+- [`web/`](./web) - the Amon Hen site deployed as a Cloudflare Worker at [amonhen.legit.place](https://amonhen.legit.place).
+
+## Requirements
+
+- Rust stable.
+- At least one provider CLI installed and authenticated: `codex`, `claude`, or `gemini`.
+- Node `>=22` only when developing or deploying the website.
+
+The CLI shells out to provider tools already installed on your machine. If a provider CLI is missing or unauthenticated, Amon Hen reports that state instead of inventing a result.
+
+## Quick Start
+
+Run from a checkout:
 
 ```bash
-cargo run -p council -- "How should I structure this CLI?"
+cargo run -p council -- --members codex,claude,gemini "Inspect this repo and propose the cleanest next patch"
 ```
 
-Install the native binary from a checkout:
+Install the local binary:
 
 ```bash
 cargo install --path crates/council
-council --members codex,claude,gemini "How should I structure this CLI?"
+council --members codex,claude,gemini "Compare these implementation options"
 ```
 
-See [`crates/council/README.md`](./crates/council/README.md) for native CLI notes.
+Launch the native Studio:
 
-The landing page has its own notes in [`web/README.md`](./web/README.md), including how its vendored browser assets are tracked.
+```bash
+council --studio --members codex,claude,gemini
+```
+
+Check provider auth and capability status:
+
+```bash
+council --auth-status --capabilities-status
+```
+
+## Provider Control
+
+Amon Hen keeps provider-native behavior available while making it visible and scriptable.
+
+```bash
+council \
+  --members codex,claude,gemini \
+  --planner codex \
+  --lead claude \
+  --handoff \
+  --iterations 2 \
+  --team-work 2 \
+  --codex-model gpt-5.2 \
+  --codex-effort high \
+  --codex-sandbox workspace-write \
+  --claude-model sonnet \
+  --claude-effort max \
+  --claude-permission-mode acceptEdits \
+  --gemini-model gemini-pro \
+  --gemini-effort high \
+  "Implement the task, run tests, and summarize tradeoffs"
+```
+
+Provider capability flags include:
+
+```bash
+--codex-config
+--codex-mcp-profile
+--claude-mcp-config
+--claude-allowed-tools
+--claude-disallowed-tools
+--gemini-settings
+--gemini-tools-profile
+```
+
+## Linear Delivery
+
+Amon Hen can run a long-lived Linear delivery loop against selected projects or epics. Each issue gets an isolated workspace, phase-specific provider prompts, retries, reconciliation state, and observability output.
+
+```bash
+council \
+  --deliver-linear \
+  --linear-project ENG \
+  --linear-until-complete \
+  --linear-completion-gate review-or-ci \
+  --members codex,claude,gemini \
+  --planner codex \
+  --lead claude \
+  --team-work 2
+```
+
+The loop is designed to keep going until each selected task reaches a human review gate or a GitHub CI gate, depending on the configured completion policy.
 
 ## Development
 
-The CLI is a Cargo workspace member. The web app remains an independent Astro project with its own `package.json`.
+CLI:
 
 ```bash
-# CLI
 cargo fmt --all --check
-cargo build --workspace
-cargo test --workspace
-
-# Site
-cd web && npm install && npm run dev
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --locked -- -D warnings
 ```
 
-If you are working on the CLI from a git checkout, run `cargo run -p council -- --help`, launch the native Studio with `cargo run -p council -- --studio`, or install it locally with `cargo install --path crates/council`.
+Site:
 
-Native Rust surfaces now include `--auth-status`, `--capabilities-status`, provider Skills/MCP/Tools override flags, `--team-work` fanout, prompt command telemetry, and Linear delivery loops that can poll targeted projects or epics until review or CI gates are satisfied.
+```bash
+cd web
+npm install
+npm run build
+```
 
-## License
+## Maintainer Branch Posture
 
-[MIT](./LICENSE)
+The fork's `main` branch is the active delivery branch. Do not open upstream pull requests from `main`; create a task branch if external review is needed. This checkout is configured so pushes go to the fork, with the upstream repository kept as a non-push reference.
 
-## Contributing
+GitHub does not expose a repository setting that makes a public fork's `main` branch impossible to select as a pull request source in every UI. The practical guardrails are: close upstream PRs, delete PR source branches, push only to the fork's `main`, and keep upstream remotes fetch-only.
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md).
+## Credits
+
+Amon Hen was inspired by the original [seeARMS/council](https://github.com/seeARMS/council) idea by Colin Armstrong. This repository has been rewritten from the ground up as a Rust-native project, with the original npm CLI core removed from the tracked implementation.
 
 ## Contributors
 
@@ -65,10 +144,10 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Security
 
+Do not commit provider tokens, Cloudflare tokens, Linear tokens, local absolute paths, or command history containing secrets. If a token has been pasted into a terminal, chat, or deploy log, rotate it after use.
+
 See [SECURITY.md](./SECURITY.md).
 
-## Releases
+## License
 
-The native Rust crate lives in [`crates/council/`](./crates/council). Releases are managed by `release-please`, which opens a release PR from commits on `main`, updates the Rust crate changelog, bumps `Cargo.toml`, tags the release, and publishes the crate from GitHub Actions.
-
-One-time maintainer setup is still required on crates.io: publish or reserve the crate name, then configure either crates.io trusted publishing for `.github/workflows/release-please.yml` or provide a scoped `CARGO_REGISTRY_TOKEN` secret.
+[MIT](./LICENSE)
