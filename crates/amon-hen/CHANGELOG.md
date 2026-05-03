@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.15
+
+- Added `--planner-mode parallel` so a lead/planner can start immediately beside Codex, Claude, and Gemini executors instead of blocking the whole run, even when handoff context is enabled.
+- Kept `--planner-mode blocking` as the default when planner output should feed executor prompts.
+- Exposed planner mode in Studio settings and persistent Studio profiles.
+
 ## 0.1.14
 
 - Decode Claude, Codex, and Gemini JSON stream events into readable Studio messages instead of raw provider JSON.

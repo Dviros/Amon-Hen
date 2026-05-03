@@ -30,6 +30,8 @@ const DEFAULT_SUMMARIZER_ORDER: [&str; 3] = ["codex", "claude", "gemini"];
 const DEFAULT_AUTH_MODE: &str = "auto";
 const CAPABILITY_INHERIT: &str = "inherit";
 const CAPABILITY_OVERRIDE: &str = "override";
+const PLANNER_MODE_BLOCKING: &str = "blocking";
+const PLANNER_MODE_PARALLEL: &str = "parallel";
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Engine {
@@ -234,6 +236,8 @@ pub struct CliArgs {
     lead: Option<String>,
     #[arg(long)]
     planner: Option<String>,
+    #[arg(long = "planner-mode", default_value = PLANNER_MODE_BLOCKING)]
+    planner_mode: String,
     #[arg(long, default_value_t = DEFAULT_ITERATIONS)]
     iterations: usize,
     #[arg(long = "team-work", alias = "teamwork", alias = "sub-agents", default_value_t = DEFAULT_TEAM_SIZE)]
@@ -376,6 +380,7 @@ struct Workflow {
     handoff: bool,
     lead: Option<String>,
     planner: Option<String>,
+    planner_mode: String,
     iterations: usize,
     team_work: usize,
     teams: HashMap<String, usize>,
@@ -907,6 +912,7 @@ Auth and provider capabilities:
 Team workflow:
   --handoff                           Feed planner/lead context between providers.
   --planner codex|claude|gemini       Assign the planning role.
+  --planner-mode blocking|parallel     Wait for planner/handoff or run planner with executors.
   --lead codex|claude|gemini          Assign the lead reviewer/synthesizer role.
   --iterations N                      Run multiple provider rounds per prompt.
   --team-work N                       Spawn N same-provider sub-agents per provider.
@@ -970,6 +976,11 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
             ));
         }
     }
+    validate_choice(
+        "--planner-mode",
+        &raw.planner_mode,
+        &[PLANNER_MODE_BLOCKING, PLANNER_MODE_PARALLEL],
+    )?;
     validate_provider_effort("codex", raw.codex_effort.as_deref())?;
     validate_provider_effort("claude", raw.claude_effort.as_deref())?;
     validate_provider_effort("gemini", raw.gemini_effort.as_deref())?;
@@ -2158,6 +2169,7 @@ fn build_workflow(resolved: &ResolvedArgs) -> Workflow {
         handoff: resolved.raw.handoff,
         lead: resolved.raw.lead.clone(),
         planner: resolved.raw.planner.clone(),
+        planner_mode: resolved.raw.planner_mode.clone(),
         iterations: resolved.raw.iterations.max(1),
         team_work: resolved.raw.team_work,
         teams,
@@ -2245,7 +2257,7 @@ fn run_iteration(
         workflow.planner.as_deref(),
         workflow.lead.as_deref(),
     );
-    if workflow.handoff {
+    if workflow.handoff && workflow.planner_mode == PLANNER_MODE_BLOCKING {
         let mut results = Vec::new();
         for member in ordered {
             let role = role_for(&member, workflow);
@@ -2284,7 +2296,8 @@ fn run_iteration(
         .cloned();
     let mut results = Vec::new();
     let mut plan_output = String::new();
-    if let Some(planner_name) = planner.as_ref() {
+    let blocking_planner = workflow.planner_mode == PLANNER_MODE_BLOCKING;
+    if let Some(planner_name) = planner.as_ref().filter(|_| blocking_planner) {
         let role = role_for(planner_name, workflow);
         let team_size = effective_team_size(workflow, planner_name);
         let prompt = build_member_prompt(MemberPromptInput {
@@ -2319,7 +2332,7 @@ fn run_iteration(
     let (tx, rx) = mpsc::channel();
     let executors = ordered
         .into_iter()
-        .filter(|member| Some(member) != planner.as_ref())
+        .filter(|member| !(blocking_planner && Some(member) == planner.as_ref()))
         .collect::<Vec<_>>();
     let resolved = Arc::new(resolved.clone());
     let workflow = Arc::new(workflow.clone());
@@ -4360,6 +4373,9 @@ mod tests {
             "codex,claude",
             "--planner",
             "codex",
+            "--planner-mode",
+            "parallel",
+            "--handoff",
             "--lead",
             "claude",
             "--codex-effort",
@@ -4379,6 +4395,7 @@ mod tests {
         .unwrap();
         let resolved = resolve_args(args).unwrap();
         assert_eq!(resolved.members, vec!["codex", "claude"]);
+        assert_eq!(resolved.raw.planner_mode, PLANNER_MODE_PARALLEL);
         assert_eq!(resolved.raw.codex_effort.as_deref(), Some("xhigh"));
         assert_eq!(
             resolved.raw.claude_allowed_tools,
@@ -4390,6 +4407,48 @@ mod tests {
             resolved.raw.gemini_allowed_mcp_servers,
             vec!["linear", "github"]
         );
+    }
+
+    #[test]
+    fn planner_parallel_mode_keeps_executors_unblocked() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex,claude,gemini",
+            "--planner",
+            "claude",
+            "--planner-mode",
+            "parallel",
+            "--handoff",
+            "--lead",
+            "claude",
+            "ship it",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let workflow = build_workflow(&resolved);
+        let ordered = execution_order(
+            &resolved.members,
+            workflow.planner.as_deref(),
+            workflow.lead.as_deref(),
+        );
+        let planner = workflow
+            .planner
+            .as_ref()
+            .filter(|planner| ordered.contains(planner))
+            .cloned();
+        let blocking_planner = workflow.planner_mode == PLANNER_MODE_BLOCKING;
+        let executors = ordered
+            .into_iter()
+            .filter(|member| !(blocking_planner && Some(member) == planner.as_ref()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(workflow.planner_mode, PLANNER_MODE_PARALLEL);
+        assert!(workflow.handoff);
+        assert_eq!(executors, vec!["claude", "codex", "gemini"]);
+        assert_eq!(role_for("claude", &workflow), "lead+planner");
+        assert_eq!(role_for("codex", &workflow), "executor");
+        assert_eq!(role_for("gemini", &workflow), "executor");
     }
 
     #[test]
@@ -4875,6 +4934,7 @@ mod tests {
             handoff: true,
             lead: Some("claude".to_string()),
             planner: Some("codex".to_string()),
+            planner_mode: PLANNER_MODE_BLOCKING.to_string(),
             iterations: 2,
             team_work: 1,
             teams: HashMap::new(),
@@ -5537,6 +5597,7 @@ mod tests {
             handoff: true,
             lead: Some("claude".to_string()),
             planner: Some("codex".to_string()),
+            planner_mode: PLANNER_MODE_BLOCKING.to_string(),
             iterations: iterations.len().max(1),
             team_work: 0,
             teams,

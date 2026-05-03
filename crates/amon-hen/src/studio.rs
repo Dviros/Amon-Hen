@@ -225,6 +225,7 @@ struct StudioProfile {
     handoff: bool,
     lead: Option<String>,
     planner: Option<String>,
+    planner_mode: String,
     summarizer: String,
     iterations: usize,
     team_work: usize,
@@ -1432,6 +1433,7 @@ fn profile_from_state(state: &StudioState) -> StudioProfile {
         handoff: raw.handoff,
         lead: raw.lead.clone(),
         planner: raw.planner.clone(),
+        planner_mode: raw.planner_mode.clone(),
         summarizer: raw.summarizer.clone(),
         iterations: raw.iterations,
         team_work: raw.team_work,
@@ -1516,6 +1518,11 @@ fn apply_studio_profile(state: &mut StudioState, profile: &StudioProfile) {
     raw.handoff = profile.handoff;
     raw.lead = profile.lead.clone();
     raw.planner = profile.planner.clone();
+    raw.planner_mode = if profile.planner_mode.trim().is_empty() {
+        PLANNER_MODE_BLOCKING.to_string()
+    } else {
+        profile.planner_mode.clone()
+    };
     raw.summarizer = profile.summarizer.clone();
     raw.iterations = profile.iterations.max(1);
     raw.team_work = profile.team_work;
@@ -1885,17 +1892,24 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
             )
         }
         3 => {
+            state.resolved.raw.planner_mode = cycle_value(
+                &state.resolved.raw.planner_mode,
+                &[PLANNER_MODE_BLOCKING, PLANNER_MODE_PARALLEL],
+                delta,
+            )
+        }
+        4 => {
             state.resolved.raw.summarizer = cycle_summarizer(&state.resolved.raw.summarizer, delta)
         }
-        4..=6 => {}
-        7 => {
+        5..=7 => {}
+        8 => {
             state.resolved.raw.iterations =
                 adjust_number(state.resolved.raw.iterations, delta, 1, 99)
         }
-        8 => {
+        9 => {
             state.resolved.raw.team_work = adjust_number(state.resolved.raw.team_work, delta, 0, 64)
         }
-        9 => {
+        10 => {
             let current = state
                 .resolved
                 .raw
@@ -1903,7 +1917,7 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 .unwrap_or(state.resolved.raw.team_work);
             state.resolved.raw.codex_sub_agents = Some(adjust_number(current, delta, 0, 64));
         }
-        10 => {
+        11 => {
             let current = state
                 .resolved
                 .raw
@@ -1911,7 +1925,7 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 .unwrap_or(state.resolved.raw.team_work);
             state.resolved.raw.claude_sub_agents = Some(adjust_number(current, delta, 0, 64));
         }
-        11 => {
+        12 => {
             let current = state
                 .resolved
                 .raw
@@ -1919,14 +1933,14 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 .unwrap_or(state.resolved.raw.team_work);
             state.resolved.raw.gemini_sub_agents = Some(adjust_number(current, delta, 0, 64));
         }
-        12 => {
+        13 => {
             state.resolved.raw.codex_sandbox = cycle_value(
                 &state.resolved.raw.codex_sandbox,
                 &["read-only", "workspace-write", "danger-full-access"],
                 delta,
             )
         }
-        13 => {
+        14 => {
             state.resolved.raw.claude_permission_mode = cycle_value(
                 &state.resolved.raw.claude_permission_mode,
                 &[
@@ -1940,42 +1954,42 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 delta,
             )
         }
-        14 => {
+        15 => {
             state.resolved.raw.codex_auth = cycle_value(
                 &state.resolved.raw.codex_auth,
                 &["auto", "social-login", "login", "api-key"],
                 delta,
             )
         }
-        15 => {
+        16 => {
             state.resolved.raw.claude_auth = cycle_value(
                 &state.resolved.raw.claude_auth,
                 &["auto", "social-login", "oauth", "api-key", "keychain"],
                 delta,
             )
         }
-        16 => {
+        17 => {
             state.resolved.raw.gemini_auth = cycle_value(
                 &state.resolved.raw.gemini_auth,
                 &["auto", "social-login", "login", "api-key"],
                 delta,
             )
         }
-        17 => {
+        18 => {
             state.resolved.raw.codex_effort = cycle_optional(
                 &state.resolved.raw.codex_effort,
                 &["low", "medium", "high", "xhigh"],
                 delta,
             )
         }
-        18 => {
+        19 => {
             state.resolved.raw.claude_effort = cycle_optional(
                 &state.resolved.raw.claude_effort,
                 &["low", "medium", "high", "xhigh", "max"],
                 delta,
             )
         }
-        19 => {
+        20 => {
             state.resolved.raw.gemini_effort = cycle_optional(
                 &state.resolved.raw.gemini_effort,
                 &["low", "medium", "high"],
@@ -3098,6 +3112,7 @@ fn settings_lines(state: &StudioState) -> Vec<String> {
                 "Planner: {}",
                 state.resolved.raw.planner.as_deref().unwrap_or("none")
             ),
+            format!("Planner mode: {}", state.resolved.raw.planner_mode),
             format!("Summarizer: {}", state.resolved.raw.summarizer),
             format!("Codex model: {}", opt(&state.resolved.raw.codex_model)),
             format!("Claude model: {}", opt(&state.resolved.raw.claude_model)),
@@ -3465,7 +3480,7 @@ fn cycle_summarizer(current: &str, delta: isize) -> String {
 }
 
 fn settings_len() -> usize {
-    20
+    21
 }
 
 fn capabilities_len() -> usize {
