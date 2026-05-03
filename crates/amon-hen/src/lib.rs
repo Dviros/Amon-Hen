@@ -23,6 +23,7 @@ const DEFAULT_MAX_MEMBER_CHARS: usize = 12_000;
 const DEFAULT_ITERATIONS: usize = 1;
 const DEFAULT_TEAM_SIZE: usize = 0;
 const TOKEN_ESTIMATE_CHARS_PER_TOKEN: usize = 4;
+const PROVIDER_STREAM_EVENT_MIN_INTERVAL: Duration = Duration::from_millis(250);
 
 const ENGINES: [&str; 3] = ["codex", "claude", "gemini"];
 const DEFAULT_SUMMARIZER_ORDER: [&str; 3] = ["codex", "claude", "gemini"];
@@ -3283,6 +3284,7 @@ where
         let mut text = String::new();
         let mut pending = String::new();
         let mut buffer = [0u8; 4096];
+        let mut last_stream_event = Instant::now() - PROVIDER_STREAM_EVENT_MIN_INTERVAL;
         loop {
             let read = match pipe.read(&mut buffer) {
                 Ok(0) => break,
@@ -3295,10 +3297,22 @@ where
             while let Some(newline) = pending.find('\n') {
                 let line = pending[..newline].trim_end_matches('\r').to_string();
                 pending = pending[newline + 1..].to_string();
-                emit_provider_stream_line(&progress, stream, &line, &text);
+                maybe_emit_provider_stream_line(
+                    &progress,
+                    stream,
+                    &line,
+                    &text,
+                    &mut last_stream_event,
+                );
             }
             if !chunk.contains('\n') {
-                emit_provider_stream_chunk(&progress, stream, &chunk, &text);
+                maybe_emit_provider_stream_chunk(
+                    &progress,
+                    stream,
+                    &chunk,
+                    &text,
+                    &mut last_stream_event,
+                );
             }
         }
         if !pending.trim().is_empty() {
@@ -3308,16 +3322,49 @@ where
     })
 }
 
-fn emit_provider_stream_chunk(
+fn maybe_emit_provider_stream_chunk(
     progress: &Option<CommandProgress>,
     stream: &str,
     chunk: &str,
     accumulated: &str,
+    last_stream_event: &mut Instant,
 ) {
     let clipped = chunk.trim();
     if clipped.len() >= 24 {
-        emit_provider_stream_line(progress, stream, clipped, accumulated);
+        maybe_emit_provider_stream_line(progress, stream, clipped, accumulated, last_stream_event);
     }
+}
+
+fn maybe_emit_provider_stream_line(
+    progress: &Option<CommandProgress>,
+    stream: &str,
+    line: &str,
+    accumulated: &str,
+    last_stream_event: &mut Instant,
+) {
+    let now = Instant::now();
+    let important = provider_stream_line_is_important(line);
+    if important || now.duration_since(*last_stream_event) >= PROVIDER_STREAM_EVENT_MIN_INTERVAL {
+        emit_provider_stream_line(progress, stream, line, accumulated);
+        *last_stream_event = now;
+    }
+}
+
+fn provider_stream_line_is_important(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    [
+        "tool_use",
+        "tool_call",
+        "functioncall",
+        "function_call",
+        "\"result\"",
+        "\"error\"",
+        "error",
+        "failed",
+        "permission",
+    ]
+    .iter()
+    .any(|needle| line.contains(needle))
 }
 
 fn emit_provider_stream_line(
@@ -5130,6 +5177,47 @@ mod tests {
                     .as_ref()
                     .is_some_and(|usage| usage.total > 10)
         }));
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeEventKind::ToolUsage
+                && event.tool_calls.iter().any(|tool| tool.name == "Bash")
+        }));
+    }
+
+    #[test]
+    fn command_stream_sampling_preserves_important_tool_events() {
+        if !command_available("sh") {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress: ProgressSink = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        });
+        let args = [
+            "-c".to_string(),
+            "i=0; while [ $i -lt 120 ]; do echo stream-line-$i; i=$((i+1)); done; printf '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}]}}\\n'"
+                .to_string(),
+        ];
+
+        let result = run_command(CommandRequest::new("sh", &args, &cwd, 5_000).progress(Some(
+            CommandProgress {
+                label: "codex planner iteration 1/1".to_string(),
+                sink: Some(progress),
+                input_tokens: 10,
+            },
+        )));
+
+        assert_eq!(result.code, Some(0));
+        let events = events.lock().unwrap();
+        let streaming_events = events
+            .iter()
+            .filter(|event| event.status.as_deref() == Some("streaming"))
+            .count();
+        assert!(
+            streaming_events < 20,
+            "expected sampled streaming events, got {streaming_events}"
+        );
         assert!(events.iter().any(|event| {
             event.kind == RuntimeEventKind::ToolUsage
                 && event.tool_calls.iter().any(|tool| tool.name == "Bash")

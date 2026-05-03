@@ -6,7 +6,7 @@ use crossterm::style::force_color_output;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,7 +14,7 @@ use ratatui::widgets::{
     Block, BorderType, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -38,6 +38,12 @@ const MENU: [&str; 18] = [
     "Help",
     "Quit",
 ];
+
+const ACTIVE_STUDIO_POLL: Duration = Duration::from_millis(33);
+const IDLE_STUDIO_POLL: Duration = Duration::from_millis(160);
+const MAX_STUDIO_MESSAGES_PER_TICK: usize = 96;
+const MAX_RUN_EVENTS: usize = 320;
+const STREAM_LOG_MIN_INTERVAL: Duration = Duration::from_millis(250);
 
 const PANES: [Pane; 6] = [
     Pane::Menu,
@@ -106,7 +112,7 @@ struct StudioState {
     last_auth_result: Option<String>,
     last_capability_result: Option<String>,
     run_job: Option<StudioRunJob>,
-    run_events: Vec<String>,
+    run_events: VecDeque<String>,
     profile_name: String,
     profile_path: PathBuf,
     profile_names: Vec<String>,
@@ -115,6 +121,7 @@ struct StudioState {
     live_token_usage: HashMap<String, TokenUsage>,
     live_tool_counts: HashMap<String, usize>,
     live_sub_agents: HashMap<String, HashSet<String>>,
+    last_stream_log_at: HashMap<String, Instant>,
     status: String,
     input_mode: Option<InputMode>,
     input_buffer: String,
@@ -341,7 +348,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         last_auth_result: None,
         last_capability_result: None,
         run_job: None,
-        run_events: Vec::new(),
+        run_events: VecDeque::new(),
         profile_name: "default".to_string(),
         profile_path,
         profile_names,
@@ -350,6 +357,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         live_token_usage: HashMap::new(),
         live_tool_counts: HashMap::new(),
         live_sub_agents: HashMap::new(),
+        last_stream_log_at: HashMap::new(),
         status: "Ready".to_string(),
         input_mode: None,
         input_buffer: String::new(),
@@ -366,18 +374,27 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
             return 1;
         }
     };
+    let backend = CrosstermBackend::new(io::stderr());
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            drop(guard);
+            eprintln!("Failed to open Studio terminal: {error}");
+            return 1;
+        }
+    };
 
     loop {
         drain_studio_job(&mut state);
-        if let Err(error) = draw(&state) {
+        if let Err(error) = draw(&mut terminal, &state) {
             drop(guard);
             eprintln!("{error}");
             return 1;
         }
         let poll_timeout = if state.run_job.is_some() {
-            Duration::from_millis(100)
+            ACTIVE_STUDIO_POLL
         } else {
-            Duration::from_millis(250)
+            IDLE_STUDIO_POLL
         };
         let has_event = match event::poll(poll_timeout) {
             Ok(has_event) => has_event,
@@ -459,6 +476,7 @@ fn start_studio_run(state: &mut StudioState) {
     state.live_token_usage.clear();
     state.live_tool_counts.clear();
     state.live_sub_agents.clear();
+    state.last_stream_log_at.clear();
     state.last_result = None;
     state.status = "Amon Hen running inside Studio".to_string();
     state.focus = Pane::Results;
@@ -903,7 +921,10 @@ fn drain_studio_job(state: &mut StudioState) {
         elapsed = Some(job.started.elapsed());
         kind = Some(job.kind);
         cancel_requested = job.cancel.load(Ordering::Relaxed);
-        while let Ok(message) = job.rx.try_recv() {
+        while messages.len() < MAX_STUDIO_MESSAGES_PER_TICK {
+            let Ok(message) = job.rx.try_recv() else {
+                break;
+            };
             messages.push(message);
         }
     }
@@ -988,7 +1009,9 @@ fn drain_studio_job(state: &mut StudioState) {
 }
 
 fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
-    push_run_event(state, sanitize_status_detail(&event.message));
+    if should_log_progress_event(state, &event) {
+        push_run_event(state, sanitize_status_detail(&event.message));
+    }
     if let Some(provider) = event.provider.clone() {
         if let Some(usage) = event.token_usage.clone() {
             state.live_token_usage.insert(provider.clone(), usage);
@@ -1020,13 +1043,36 @@ fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
 }
 
 fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
-    const MAX_RUN_EVENTS: usize = 500;
-    state.run_events.push(studio_clip(&line.into(), 240));
+    state.run_events.push_back(studio_clip(&line.into(), 240));
     if state.run_events.len() > MAX_RUN_EVENTS {
         let overflow = state.run_events.len() - MAX_RUN_EVENTS;
-        state.run_events.drain(0..overflow);
+        for _ in 0..overflow {
+            state.run_events.pop_front();
+        }
     }
     state.result_index = result_len(state).saturating_sub(1);
+}
+
+fn should_log_progress_event(state: &mut StudioState, event: &ProgressEvent) -> bool {
+    if event.stage != ProgressStage::Heartbeat
+        || event.status.as_deref() != Some("streaming")
+        || !event.tool_calls.is_empty()
+    {
+        return true;
+    }
+    let key = format!(
+        "{}:{}",
+        event.provider.as_deref().unwrap_or("unknown"),
+        event.role.as_deref().unwrap_or("agent")
+    );
+    let now = Instant::now();
+    match state.last_stream_log_at.get(&key) {
+        Some(last) if now.duration_since(*last) < STREAM_LOG_MIN_INTERVAL => false,
+        _ => {
+            state.last_stream_log_at.insert(key, now);
+            true
+        }
+    }
 }
 
 fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, String> {
@@ -2061,10 +2107,7 @@ const STUDIO_RED: Color = Color::Rgb(244, 97, 97);
 const STUDIO_GREEN: Color = Color::Rgb(114, 222, 128);
 const STUDIO_BLUE: Color = Color::Rgb(96, 165, 250);
 
-fn draw(state: &StudioState) -> Result<(), String> {
-    let backend = CrosstermBackend::new(io::stderr());
-    let mut terminal = Terminal::new(backend)
-        .map_err(|error| format!("Failed to open Studio terminal: {error}"))?;
+fn draw<B: Backend>(terminal: &mut Terminal<B>, state: &StudioState) -> Result<(), String> {
     terminal
         .draw(|frame| render_studio(frame, state))
         .map_err(|error| format!("Failed to draw Studio: {error}"))?;
@@ -2963,15 +3006,19 @@ fn provider_health_lines(state: &StudioState) -> Vec<String> {
 }
 
 fn total_session_tokens(state: &StudioState) -> usize {
-    let Some(result) = &state.last_result else {
-        return 0;
-    };
-    result
-        .members
-        .iter()
-        .map(|member| member.token_usage.total)
-        .sum::<usize>()
-        + result.summary.token_usage.total
+    if let Some(result) = &state.last_result {
+        return result
+            .members
+            .iter()
+            .map(|member| member.token_usage.total)
+            .sum::<usize>()
+            + result.summary.token_usage.total;
+    }
+    state
+        .live_token_usage
+        .values()
+        .map(|usage| usage.total)
+        .sum()
 }
 
 fn compact_count(value: usize) -> String {
@@ -3609,6 +3656,34 @@ mod tests {
     }
 
     #[test]
+    fn studio_job_drain_is_bounded_for_responsive_input() {
+        let mut state = test_state("prompt");
+        let (tx, rx) = std::sync::mpsc::channel();
+        for index in 0..(MAX_STUDIO_MESSAGES_PER_TICK + 25) {
+            tx.send(StudioJobMessage::Log(format!("line {index}")))
+                .unwrap();
+        }
+        state.run_job = Some(StudioRunJob {
+            rx,
+            started: Instant::now(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            kind: StudioJobKind::AmonHen,
+        });
+
+        drain_studio_job(&mut state);
+
+        assert_eq!(state.run_events.len(), MAX_STUDIO_MESSAGES_PER_TICK);
+        assert!(state.run_job.is_some());
+        let action = handle_event(
+            &mut state,
+            Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
+        )
+        .unwrap();
+        assert!(matches!(action, StudioAction::None));
+        assert!(matches!(state.input_mode, Some(InputMode::Prompt)));
+    }
+
+    #[test]
     fn studio_actions_are_dashboard_jobs() {
         let actions = [
             (StudioAction::RunAmonHen, StudioJobKind::AmonHen),
@@ -3857,7 +3932,7 @@ mod tests {
             last_auth_result: None,
             last_capability_result: None,
             run_job: None,
-            run_events: Vec::new(),
+            run_events: VecDeque::new(),
             profile_name: "default".to_string(),
             profile_path: PathBuf::from(".amon-hen-studio-profiles.json"),
             profile_names: Vec::new(),
@@ -3866,6 +3941,7 @@ mod tests {
             live_token_usage: HashMap::new(),
             live_tool_counts: HashMap::new(),
             live_sub_agents: HashMap::new(),
+            last_stream_log_at: HashMap::new(),
             status: "Ready".to_string(),
             input_mode: None,
             input_buffer: String::new(),

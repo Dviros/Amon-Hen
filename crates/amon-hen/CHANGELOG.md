@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.13
+
+- Keep Studio responsive while provider CLIs stream large outputs by reusing the terminal backend instead of rebuilding it every frame.
+- Drain Studio job events in bounded batches so scrolling and typing are not blocked behind provider log bursts.
+- Sample high-volume provider stream logs while preserving live token/tool telemetry and important tool/error/result events.
+
 ## 0.1.12
 
 - Stream provider stdout/stderr into Studio and `--json-stream` while provider CLIs are still running.
