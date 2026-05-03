@@ -3450,6 +3450,9 @@ fn provider_visible_stream(
         return StreamDisplay::Visible(sanitize_status_detail(line));
     };
     let Ok(value) = serde_json::from_str::<Value>(line) else {
+        if looks_like_json_line(line) {
+            return StreamDisplay::Suppress;
+        }
         return StreamDisplay::Visible(sanitize_status_detail(line));
     };
     let visible = match provider {
@@ -3475,6 +3478,22 @@ fn visible_tool_summary(tool: &ToolUsage) -> String {
 }
 
 fn claude_visible_stream(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) == Some("stream_event") {
+        return value.get("event").and_then(claude_visible_stream);
+    }
+    match value.get("type").and_then(Value::as_str) {
+        Some("content_block_delta") => return claude_visible_delta(value.get("delta")?),
+        Some("content_block_start") => {
+            return value
+                .get("content_block")
+                .and_then(visible_content_block)
+                .map(|text| sanitize_status_detail(&text));
+        }
+        Some("content_block_stop" | "message_start" | "message_delta" | "message_stop") => {
+            return None;
+        }
+        _ => {}
+    }
     if let Some(result) = non_empty_str(value.get("result")) {
         return Some(format!("result: {}", sanitize_status_detail(result)));
     }
@@ -3495,6 +3514,67 @@ fn claude_visible_stream(value: &Value) -> Option<String> {
         return Some(format!("error: {}", sanitize_status_detail(error)));
     }
     None
+}
+
+fn claude_visible_delta(delta: &Value) -> Option<String> {
+    match delta.get("type").and_then(Value::as_str) {
+        Some("text_delta") => delta
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| format!("assistant: {}", sanitize_status_detail(text))),
+        Some("input_json_delta" | "thinking_delta" | "signature_delta") => None,
+        _ => delta
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| format!("assistant: {}", sanitize_status_detail(text))),
+    }
+}
+
+fn claude_output_text(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) == Some("stream_event") {
+        return value.get("event").and_then(claude_output_text);
+    }
+    match value.get("type").and_then(Value::as_str) {
+        Some("content_block_delta") => {
+            let delta = value.get("delta")?;
+            return match delta.get("type").and_then(Value::as_str) {
+                Some("text_delta") => non_empty_str(delta.get("text")).map(str::to_string),
+                _ => None,
+            };
+        }
+        Some("content_block_start") => {
+            let block = value.get("content_block")?;
+            if matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("text" | "output_text")
+            ) {
+                return non_empty_str(block.get("text")).map(str::to_string);
+            }
+        }
+        _ => {}
+    }
+    if let Some(result) = non_empty_str(value.get("result")) {
+        return Some(result.to_string());
+    }
+    value
+        .pointer("/message/content")
+        .and_then(Value::as_array)
+        .map(|content| {
+            content
+                .iter()
+                .filter_map(|block| {
+                    matches!(
+                        block.get("type").and_then(Value::as_str),
+                        Some("text" | "output_text")
+                    )
+                    .then(|| non_empty_str(block.get("text")))
+                    .flatten()
+                })
+                .collect::<String>()
+        })
+        .filter(|text| !text.trim().is_empty())
 }
 
 fn gemini_visible_stream(value: &Value) -> Option<String> {
@@ -3762,6 +3842,7 @@ fn parse_claude_output(stdout: &str) -> String {
         }
     }
     let mut latest = String::new();
+    let mut streamed_text = String::new();
     for line in trimmed.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -3770,20 +3851,14 @@ fn parse_claude_output(stdout: &str) -> String {
             if let Some(result) = value.get("result").and_then(Value::as_str) {
                 latest = result.trim().to_string();
             }
+            continue;
         }
-        if value.get("type").and_then(Value::as_str) == Some("assistant") {
-            if let Some(content) = value.pointer("/message/content").and_then(Value::as_array) {
-                let text = content
-                    .iter()
-                    .filter_map(|block| {
-                        (block.get("type").and_then(Value::as_str) == Some("text"))
-                            .then(|| block.get("text").and_then(Value::as_str))
-                            .flatten()
-                    })
-                    .collect::<String>();
-                if !text.trim().is_empty() {
-                    latest = text.trim().to_string();
-                }
+        if let Some(text) = claude_output_text(&value) {
+            if value.get("type").and_then(Value::as_str) == Some("stream_event") {
+                streamed_text.push_str(&text);
+                latest = streamed_text.trim().to_string();
+            } else if !text.trim().is_empty() {
+                latest = text.trim().to_string();
             }
         }
     }
@@ -4127,6 +4202,9 @@ fn collect_tool_usage(value: &Value, tools: &mut Vec<ToolUsage>) {
 
 fn line_tool_usage(provider: &str, line: &str) -> Option<ToolUsage> {
     let trimmed = line.trim();
+    if looks_like_json_line(trimmed) {
+        return None;
+    }
     let lowered = trimmed.to_ascii_lowercase();
     let marker = ["running shell:", "tool:", "tool_use", "mcp:", "command:"]
         .iter()
@@ -4169,6 +4247,11 @@ fn json_values(text: &str) -> Vec<Value> {
         }
     }
     values
+}
+
+fn looks_like_json_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
 }
 
 fn estimate_tokens(text: &str) -> usize {
@@ -5028,6 +5111,37 @@ mod tests {
         assert_eq!(
             provider_visible_stream(Some("gemini"), gemini, &[]),
             StreamDisplay::Visible("assistant: Gate waterfall evidence is still thin.".to_string())
+        );
+    }
+
+    #[test]
+    fn claude_stream_event_json_suppresses_input_shards() {
+        let input_delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"\"fallback_trigger\""},"session_id":"abc"}}"#;
+        let tool_start = r#"{"type":"stream_event","event":{"type":"content_block_start","index":6,"content_block":{"type":"tool_use","id":"toolu_123","name":"Agent","input":{"description":"Agent E - CLOB/WS Timing","prompt":"Inspect the live VPS timing path"}},"session_id":"abc"}}"#;
+        let text_delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I found the first timing issue."},"session_id":"abc"}}"#;
+
+        assert_eq!(
+            provider_visible_stream(Some("claude"), input_delta, &[]),
+            StreamDisplay::Suppress
+        );
+        assert!(extract_tool_usage("claude", input_delta, "").is_empty());
+
+        let visible_tool = match provider_visible_stream(Some("claude"), tool_start, &[]) {
+            StreamDisplay::Visible(text) => text,
+            StreamDisplay::Suppress => panic!("tool start should be visible"),
+        };
+        assert!(visible_tool.contains("tool: Agent"));
+        assert!(visible_tool.contains("CLOB/WS Timing"));
+        assert!(!visible_tool.contains("stream_event"));
+        assert!(!visible_tool.contains("partial_json"));
+
+        assert_eq!(
+            provider_visible_stream(Some("claude"), text_delta, &[]),
+            StreamDisplay::Visible("assistant: I found the first timing issue.".to_string())
+        );
+        assert_eq!(
+            parse_claude_output(&format!("{text_delta}\n{text_delta}\n")),
+            "I found the first timing issue.I found the first timing issue."
         );
     }
 

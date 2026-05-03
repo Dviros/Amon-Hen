@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.16
+
+- Decode nested Claude `stream_event` records into readable assistant/tool messages.
+- Suppress Claude `input_json_delta.partial_json` shards so Studio no longer floods with raw tool JSON while an agent call is being assembled.
+- Prevent JSON-looking provider lines from falling back to raw log output when they are not visible user-facing messages.
+
 ## 0.1.15
 
 - Added `--planner-mode parallel` so a lead/planner can start immediately beside Codex, Claude, and Gemini executors instead of blocking the whole run, even when handoff context is enabled.
