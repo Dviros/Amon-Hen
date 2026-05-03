@@ -1,12 +1,19 @@
 use super::*;
-use crossterm::cursor::{Hide, MoveTo, Show};
+use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::style::Print;
+use crossterm::execute;
+use crossterm::style::force_color_output;
 use crossterm::terminal::{
-    self, disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
-    LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::{execute, queue};
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
+};
+use ratatui::{Frame, Terminal};
 
 const MENU: [&str; 15] = [
     "Run / re-run",
@@ -57,6 +64,9 @@ enum InputMode {
     LinearTeam,
     LinearState,
     LinearMedia,
+    CodexModel,
+    ClaudeModel,
+    GeminiModel,
     CodexConfig,
     CodexProfile,
     ClaudeMcpConfig,
@@ -160,6 +170,8 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         show_help: false,
         exit_armed_until: None,
     };
+
+    configure_studio_color(&state.resolved.raw);
 
     let mut guard = match TerminalGuard::enter() {
         Ok(guard) => guard,
@@ -312,6 +324,7 @@ fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, S
         }
         KeyCode::Char('?') => state.show_help = !state.show_help,
         KeyCode::Char('r') => return Ok(StudioAction::RunAmonHen),
+        KeyCode::Char('e') => return start_input(state, InputMode::Prompt, state.prompt.clone()),
         KeyCode::Tab => cycle_focus(state, 1),
         KeyCode::BackTab => cycle_focus(state, -1),
         KeyCode::Char('[') => move_focused_pane(state, -1),
@@ -409,6 +422,18 @@ fn apply_input(state: &mut StudioState, mode: InputMode, value: String) {
             "Linear media",
             &mut state.status,
         ),
+        InputMode::CodexModel => {
+            state.resolved.raw.codex_model = empty_to_none(value);
+            state.status = "Codex model updated".to_string();
+        }
+        InputMode::ClaudeModel => {
+            state.resolved.raw.claude_model = empty_to_none(value);
+            state.status = "Claude model updated".to_string();
+        }
+        InputMode::GeminiModel => {
+            state.resolved.raw.gemini_model = empty_to_none(value);
+            state.status = "Gemini model updated".to_string();
+        }
         InputMode::CodexConfig => set_csv(
             &mut state.resolved.raw.codex_config,
             value,
@@ -558,13 +583,34 @@ fn adjust_selection(state: &mut StudioState, delta: isize) -> Result<(), String>
 fn activate_selection(state: &mut StudioState) -> Result<StudioAction, String> {
     match state.focus {
         Pane::Menu => activate_menu(state),
-        Pane::Settings => {
-            adjust_setting(state, 1)?;
-            Ok(StudioAction::None)
-        }
+        Pane::Settings => activate_setting(state),
         Pane::Capabilities => activate_capability(state),
         Pane::Linear => activate_linear(state),
         Pane::Agents | Pane::Results => Ok(StudioAction::None),
+    }
+}
+
+fn activate_setting(state: &mut StudioState) -> Result<StudioAction, String> {
+    match state.setting_index {
+        4 => start_input(
+            state,
+            InputMode::CodexModel,
+            state.resolved.raw.codex_model.clone().unwrap_or_default(),
+        ),
+        5 => start_input(
+            state,
+            InputMode::ClaudeModel,
+            state.resolved.raw.claude_model.clone().unwrap_or_default(),
+        ),
+        6 => start_input(
+            state,
+            InputMode::GeminiModel,
+            state.resolved.raw.gemini_model.clone().unwrap_or_default(),
+        ),
+        _ => {
+            adjust_setting(state, 1)?;
+            Ok(StudioAction::None)
+        }
     }
 }
 
@@ -775,14 +821,15 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
         3 => {
             state.resolved.raw.summarizer = cycle_summarizer(&state.resolved.raw.summarizer, delta)
         }
-        4 => {
+        4..=6 => {}
+        7 => {
             state.resolved.raw.iterations =
                 adjust_number(state.resolved.raw.iterations, delta, 1, 99)
         }
-        5 => {
+        8 => {
             state.resolved.raw.team_work = adjust_number(state.resolved.raw.team_work, delta, 0, 64)
         }
-        6 => {
+        9 => {
             let current = state
                 .resolved
                 .raw
@@ -790,7 +837,7 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 .unwrap_or(state.resolved.raw.team_work);
             state.resolved.raw.codex_sub_agents = Some(adjust_number(current, delta, 0, 64));
         }
-        7 => {
+        10 => {
             let current = state
                 .resolved
                 .raw
@@ -798,7 +845,7 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 .unwrap_or(state.resolved.raw.team_work);
             state.resolved.raw.claude_sub_agents = Some(adjust_number(current, delta, 0, 64));
         }
-        8 => {
+        11 => {
             let current = state
                 .resolved
                 .raw
@@ -806,14 +853,14 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 .unwrap_or(state.resolved.raw.team_work);
             state.resolved.raw.gemini_sub_agents = Some(adjust_number(current, delta, 0, 64));
         }
-        9 => {
+        12 => {
             state.resolved.raw.codex_sandbox = cycle_value(
                 &state.resolved.raw.codex_sandbox,
                 &["read-only", "workspace-write", "danger-full-access"],
                 delta,
             )
         }
-        10 => {
+        13 => {
             state.resolved.raw.claude_permission_mode = cycle_value(
                 &state.resolved.raw.claude_permission_mode,
                 &[
@@ -827,42 +874,42 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 delta,
             )
         }
-        11 => {
+        14 => {
             state.resolved.raw.codex_auth = cycle_value(
                 &state.resolved.raw.codex_auth,
                 &["auto", "social-login", "login", "api-key"],
                 delta,
             )
         }
-        12 => {
+        15 => {
             state.resolved.raw.claude_auth = cycle_value(
                 &state.resolved.raw.claude_auth,
                 &["auto", "social-login", "oauth", "api-key", "keychain"],
                 delta,
             )
         }
-        13 => {
+        16 => {
             state.resolved.raw.gemini_auth = cycle_value(
                 &state.resolved.raw.gemini_auth,
                 &["auto", "social-login", "login", "api-key"],
                 delta,
             )
         }
-        14 => {
+        17 => {
             state.resolved.raw.codex_effort = cycle_optional(
                 &state.resolved.raw.codex_effort,
                 &["low", "medium", "high", "xhigh"],
                 delta,
             )
         }
-        15 => {
+        18 => {
             state.resolved.raw.claude_effort = cycle_optional(
                 &state.resolved.raw.claude_effort,
                 &["low", "medium", "high", "xhigh", "max"],
                 delta,
             )
         }
-        16 => {
+        19 => {
             state.resolved.raw.gemini_effort = cycle_optional(
                 &state.resolved.raw.gemini_effort,
                 &["low", "medium", "high"],
@@ -981,145 +1028,32 @@ fn adjust_linear(state: &mut StudioState, delta: isize) -> Result<(), String> {
     Ok(())
 }
 
+const STUDIO_BG: Color = Color::Rgb(8, 10, 14);
+const STUDIO_PANEL: Color = Color::Rgb(16, 20, 27);
+const STUDIO_PANEL_ALT: Color = Color::Rgb(20, 25, 34);
+const STUDIO_TEXT: Color = Color::Rgb(229, 232, 238);
+const STUDIO_MUTED: Color = Color::Rgb(138, 148, 164);
+const STUDIO_BORDER: Color = Color::Rgb(54, 65, 83);
+const STUDIO_ACCENT: Color = Color::Rgb(71, 214, 181);
+const STUDIO_GOLD: Color = Color::Rgb(246, 196, 83);
+const STUDIO_PURPLE: Color = Color::Rgb(177, 139, 255);
+const STUDIO_RED: Color = Color::Rgb(244, 97, 97);
+const STUDIO_GREEN: Color = Color::Rgb(114, 222, 128);
+const STUDIO_BLUE: Color = Color::Rgb(96, 165, 250);
+
 fn draw(state: &StudioState) -> Result<(), String> {
-    let (columns, rows) = terminal::size().unwrap_or((100, 28));
-    let width = safe_terminal_width(columns);
-    let height = usize::from(rows).max(1);
-    let lines = render_screen_lines(state, width, height);
-    let mut out = io::stderr();
-    execute!(out, MoveTo(0, 0), Clear(ClearType::All))
+    let backend = CrosstermBackend::new(io::stderr());
+    let mut terminal = Terminal::new(backend)
+        .map_err(|error| format!("Failed to open Studio terminal: {error}"))?;
+    terminal
+        .draw(|frame| render_studio(frame, state))
         .map_err(|error| format!("Failed to draw Studio: {error}"))?;
-    for (row, line) in lines.iter().take(height).enumerate() {
-        let row = u16::try_from(row).unwrap_or(u16::MAX);
-        queue!(
-            out,
-            MoveTo(0, row),
-            Clear(ClearType::CurrentLine),
-            Print(studio_clip(line, width))
-        )
-        .map_err(|error| format!("Failed to draw Studio row: {error}"))?;
-    }
-    out.flush().map_err(|error| error.to_string())
-}
-
-fn safe_terminal_width(columns: u16) -> usize {
-    usize::from(columns).saturating_sub(2).max(1)
-}
-
-fn render_screen_lines(state: &StudioState, width: usize, height: usize) -> Vec<String> {
-    if width < 64 || height < 18 {
-        return compact_lines(state, width, height);
-    }
-    let header = format!(
-        "Amon Hen Studio | members {} | lead {} | planner {} | handoff {} | {}x",
-        state.resolved.members.join(","),
-        state.resolved.raw.lead.as_deref().unwrap_or("auto"),
-        state.resolved.raw.planner.as_deref().unwrap_or("none"),
-        if state.resolved.raw.handoff {
-            "on"
-        } else {
-            "off"
-        },
-        state.resolved.raw.iterations
-    );
-
-    let mut lines = Vec::with_capacity(height);
-    lines.push(studio_clip(&header, width));
-    lines.push(studio_clip(&state.status, width));
-    lines.push(String::new());
-
-    let help = if state.show_help {
-        help_lines()
-            .into_iter()
-            .map(|line| studio_clip(line, width))
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let prompt_height = if state.input_mode.is_some() { 4 } else { 3 };
-    let pane_height = height.saturating_sub(3 + prompt_height + help.len());
-    let top_height = pane_height.div_ceil(2);
-    let bottom_height = pane_height.saturating_sub(top_height);
-    let panes = state.pane_order.clone();
-    let top = panes.iter().take(3).copied().collect::<Vec<_>>();
-    let bottom = panes.iter().skip(3).take(3).copied().collect::<Vec<_>>();
-    lines.extend(render_row_lines(state, &top, width, top_height));
-    lines.extend(render_row_lines(state, &bottom, width, bottom_height));
-    lines.extend(prompt_lines(state, width).into_iter().take(prompt_height));
-    lines.extend(help);
-    lines.truncate(height);
-    lines
-}
-
-fn compact_lines(state: &StudioState, width: usize, height: usize) -> Vec<String> {
-    [
-        "Amon Hen Studio",
-        "Terminal too small for pane layout.",
-        "Resize wider/taller, or run without --studio for plain output.",
-        "",
-        "Keys: Ctrl+C twice quits.",
-        &format!("Status: {}", state.status),
-        &format!("Members: {}", state.resolved.members.join(",")),
-        &format!("Prompt: {}", state.prompt.trim()),
-    ]
-    .iter()
-    .take(height)
-    .map(|line| studio_clip(line, width))
-    .collect()
-}
-
-#[cfg(test)]
-fn write_row(
-    out: &mut impl Write,
-    state: &StudioState,
-    panes: &[Pane],
-    row_width: usize,
-    height: usize,
-) -> Result<(), String> {
-    for row in render_row_lines(state, panes, row_width, height) {
-        write_clipped_line(out, row_width, &row)?;
-    }
     Ok(())
 }
 
-fn render_row_lines(
-    state: &StudioState,
-    panes: &[Pane],
-    row_width: usize,
-    height: usize,
-) -> Vec<String> {
-    let pane_count = panes.len().max(1);
-    let gap_width = pane_count.saturating_sub(1);
-    let width = row_width.saturating_sub(gap_width) / pane_count;
-    let rendered = panes
-        .iter()
-        .map(|pane| render_pane(state, *pane, width, height))
-        .collect::<Vec<_>>();
-    let mut rows = Vec::with_capacity(height);
-    for line in 0..height {
-        let mut row = String::new();
-        for (index, pane) in rendered.iter().enumerate() {
-            if index > 0 {
-                row.push(' ');
-            }
-            row.push_str(&fit_line(
-                pane.get(line).map(String::as_str).unwrap_or_default(),
-                width,
-            ));
-        }
-        rows.push(studio_clip(&row, row_width));
-    }
-    rows
-}
-
-#[cfg(test)]
-fn write_clipped_line(out: &mut impl Write, width: usize, line: &str) -> Result<(), String> {
-    writeln!(out, "{}", studio_clip(line, width)).map_err(|error| error.to_string())
-}
-
-fn fit_line(line: &str, width: usize) -> String {
-    let clipped = studio_clip(line, width);
-    format!("{clipped:<width$}")
+fn configure_studio_color(raw: &CliArgs) {
+    let color_enabled = !raw.no_color && raw.color != "never";
+    force_color_output(color_enabled);
 }
 
 fn studio_clip(text: &str, max_chars: usize) -> String {
@@ -1150,38 +1084,798 @@ fn studio_clip(text: &str, max_chars: usize) -> String {
     clipped
 }
 
-fn render_pane(state: &StudioState, pane: Pane, width: usize, height: usize) -> Vec<String> {
-    let (title, lines) = match pane {
-        Pane::Menu => ("Command Palette", menu_lines(state)),
-        Pane::Settings => ("Settings", settings_lines(state)),
-        Pane::Agents => ("Agents", agent_lines(state)),
-        Pane::Capabilities => ("Capabilities", capability_lines(state)),
-        Pane::Linear => ("Linear", linear_lines(state)),
-        Pane::Results => ("Results", result_lines(state)),
-    };
-    boxed_lines(
-        &format!("{}{}", if state.focus == pane { "* " } else { "" }, title),
-        &lines,
-        width,
-        height,
-    )
+fn render_studio(frame: &mut Frame<'_>, state: &StudioState) {
+    let area = frame.area();
+    frame.render_widget(Block::new().style(Style::default().bg(STUDIO_BG)), area);
+    if area.width < 92 || area.height < 24 {
+        render_compact_studio(frame, area, state);
+        return;
+    }
+
+    let prompt_height = if state.input_mode.is_some() { 6 } else { 5 };
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(16),
+            Constraint::Length(prompt_height),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    render_header(frame, layout[0], state);
+
+    if area.width >= 150 {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(31),
+                Constraint::Min(64),
+                Constraint::Length(46),
+            ])
+            .split(layout[1]);
+        render_command_rail(frame, body[0], state);
+        render_workbench(frame, body[1], state);
+        render_configuration(frame, body[2], state);
+    } else {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(29), Constraint::Min(60)])
+            .split(layout[1]);
+        render_command_rail(frame, body[0], state);
+        render_medium_workbench(frame, body[1], state);
+    }
+    render_prompt(frame, layout[2], state);
+    render_footer(frame, layout[3], state);
 }
 
-fn menu_lines(state: &StudioState) -> Vec<String> {
-    MENU.iter()
+fn render_compact_studio(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let block = panel_block("Amon Hen Studio", true);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines = vec![
+        Line::from(vec![Span::styled(
+            "Terminal too small for full Studio",
+            strong(STUDIO_GOLD),
+        )]),
+        Line::from("Resize wider/taller for the dashboard."),
+        Line::from(format!(
+            "Members: {} | lead {} | planner {}",
+            state.resolved.members.join(","),
+            state.resolved.raw.lead.as_deref().unwrap_or("auto"),
+            state.resolved.raw.planner.as_deref().unwrap_or("none")
+        )),
+        Line::from(format!("Status: {}", state.status)),
+        Line::from("Keys: r run | e prompt | Tab focus | Ctrl+C twice quit"),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
+}
+
+fn render_header(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let workflow = build_workflow(&state.resolved);
+    let total_tokens = total_session_tokens(state);
+    let block = Block::new().style(Style::default().bg(STUDIO_BG));
+    frame.render_widget(block, area);
+    let title_line = Line::from(vec![
+        Span::styled("Amon Hen", strong(STUDIO_GOLD)),
+        Span::raw("  "),
+        Span::styled("Rust-native agent command center", muted()),
+        Span::raw("  "),
+        status_span(&state.status),
+    ]);
+    let identity_chips = vec![
+        chip("members", &state.resolved.members.join(","), STUDIO_ACCENT),
+        Span::raw("  "),
+        chip(
+            "lead",
+            state.resolved.raw.lead.as_deref().unwrap_or("auto"),
+            STUDIO_PURPLE,
+        ),
+        Span::raw("  "),
+        chip(
+            "planner",
+            state.resolved.raw.planner.as_deref().unwrap_or("none"),
+            STUDIO_BLUE,
+        ),
+        Span::raw("  "),
+        chip("handoff", on_off(state.resolved.raw.handoff), STUDIO_GREEN),
+    ];
+    let metric_chips = vec![
+        chip(
+            "iterations",
+            &state.resolved.raw.iterations.to_string(),
+            STUDIO_GOLD,
+        ),
+        Span::raw("  "),
+        chip(
+            "team",
+            &team_chip_value(&workflow, area.width),
+            STUDIO_ACCENT,
+        ),
+        Span::raw("  "),
+        chip("tokens", &compact_count(total_tokens), STUDIO_PURPLE),
+    ];
+    let lines = if area.width < 132 {
+        vec![
+            title_line,
+            Line::from(identity_chips),
+            Line::from(metric_chips),
+        ]
+    } else {
+        let mut chips = identity_chips;
+        chips.push(Span::raw("  "));
+        chips.extend(metric_chips);
+        vec![title_line, Line::from(chips)]
+    };
+    let header = Paragraph::new(lines).style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_BG));
+    frame.render_widget(header, area);
+}
+
+fn render_command_rail(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(21),
+            Constraint::Length(8),
+            Constraint::Length(7),
+        ])
+        .split(area);
+
+    let items = MENU
+        .iter()
         .enumerate()
         .map(|(index, item)| {
-            format!(
-                "{} {}",
-                if state.focus == Pane::Menu && index == state.menu_index {
-                    ">"
-                } else {
-                    " "
-                },
-                item
-            )
+            let selected = state.focus == Pane::Menu && index == state.menu_index;
+            let style = if selected {
+                selected_style()
+            } else {
+                Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(if selected { "> " } else { "  " }, strong(STUDIO_ACCENT)),
+                Span::styled(*item, style),
+            ]))
+            .style(style)
         })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).block(panel_block("Command rail", state.focus == Pane::Menu)),
+        chunks[0],
+    );
+
+    let session = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("Mode", muted()),
+            Span::raw("  "),
+            Span::styled("Studio", strong(STUDIO_ACCENT)),
+        ]),
+        Line::from(format!("Files tagged: {}", state.resolved.raw.files.len())),
+        Line::from(format!("Commands: {}", state.resolved.raw.commands.len())),
+        Line::from(format!("Timeout: {}s", state.resolved.raw.timeout)),
+        Line::from(format!("Repo: {}", display_cwd(&state.resolved.cwd))),
+    ])
+    .block(panel_block("Session", false))
+    .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
+    .wrap(Wrap { trim: true });
+    frame.render_widget(session, chunks[1]);
+
+    let hints = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("Tab", strong(STUDIO_GOLD)),
+            Span::raw(" change focus"),
+        ]),
+        Line::from(vec![
+            Span::styled("Enter", strong(STUDIO_GOLD)),
+            Span::raw(" activate/edit"),
+        ]),
+        Line::from(vec![
+            Span::styled("Left/Right", strong(STUDIO_GOLD)),
+            Span::raw(" modify"),
+        ]),
+        Line::from(vec![
+            Span::styled("r", strong(STUDIO_GOLD)),
+            Span::raw(" run now"),
+        ]),
+        Line::from(vec![
+            Span::styled("e", strong(STUDIO_GOLD)),
+            Span::raw(" edit prompt"),
+        ]),
+    ])
+    .block(panel_block("Hotkeys", false))
+    .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL));
+    frame.render_widget(hints, chunks[2]);
+}
+
+fn render_workbench(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(11),
+            Constraint::Length(7),
+            Constraint::Min(8),
+        ])
+        .split(area);
+    render_provider_cards(frame, chunks[0], state);
+    render_token_and_tools(frame, chunks[1], state);
+    render_results_panel(frame, chunks[2], state);
+}
+
+fn render_medium_workbench(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(11),
+            Constraint::Length(7),
+            Constraint::Min(8),
+        ])
+        .split(area);
+    render_provider_cards(frame, chunks[0], state);
+    render_token_and_tools(frame, chunks[1], state);
+    if chunks[2].width >= 86 {
+        let lower = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(42), Constraint::Length(42)])
+            .split(chunks[2]);
+        render_results_panel(frame, lower[0], state);
+        render_configuration(frame, lower[1], state);
+    } else {
+        let lower = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(chunks[2]);
+        render_results_panel(frame, lower[0], state);
+        render_configuration(frame, lower[1], state);
+    }
+}
+
+fn render_provider_cards(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let members = if state.resolved.members.is_empty() {
+        ENGINES
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        state.resolved.members.clone()
+    };
+    let constraints = vec![Constraint::Ratio(1, members.len() as u32); members.len()];
+    let cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+    let max_tokens = members
+        .iter()
+        .map(|member| provider_result(state, member).map_or(0, |result| result.token_usage.total))
+        .max()
+        .unwrap_or(0)
+        .max(1);
+
+    for (index, member) in members.iter().enumerate() {
+        let Some(area) = cards.get(index).copied() else {
+            continue;
+        };
+        render_provider_card(frame, area, state, member, max_tokens);
+    }
+}
+
+fn render_provider_card(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &StudioState,
+    member: &str,
+    max_tokens: usize,
+) {
+    let color = provider_color(member);
+    let result = provider_result(state, member);
+    let workflow = build_workflow(&state.resolved);
+    let role = result
+        .map(|result| result.role.clone())
+        .unwrap_or_else(|| role_for(member, &workflow));
+    let status = result.map_or("ready", |result| result.status.as_str());
+    let token_usage = result.map(|result| &result.token_usage);
+    let total_tokens = token_usage.map_or(0, |usage| usage.total);
+    let percent = ((total_tokens.saturating_mul(100)) / max_tokens).min(100) as u16;
+    let tools = result.map_or(0, |result| result.tool_calls.len());
+    let sub_agents = result.map_or(0, |result| result.sub_agents.len());
+    let command = result
+        .map(|result| studio_clip(&result.command, 64))
+        .unwrap_or_else(|| "not run yet".to_string());
+    let block = panel_block(member.to_ascii_uppercase(), state.focus == Pane::Agents)
+        .border_style(Style::default().fg(color))
+        .title_style(strong(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    let input = token_usage.map_or(0, |usage| usage.input);
+    let output = token_usage.map_or(0, |usage| usage.output);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("role ", muted()),
+            Span::styled(role, strong(STUDIO_TEXT)),
+            Span::raw("  "),
+            Span::styled("status ", muted()),
+            Span::styled(status, strong(status_color(status))),
+        ]),
+        Line::from(vec![
+            Span::styled("auth ", muted()),
+            Span::raw(provider_auth(&state.resolved, member)),
+            Span::raw("  "),
+            Span::styled("effort ", muted()),
+            Span::raw(provider_effort(state, member)),
+        ]),
+        Line::from(vec![
+            Span::styled("model ", muted()),
+            Span::raw(studio_clip(&provider_model(state, member), 28)),
+        ]),
+        Line::from(vec![
+            Span::styled("in ", muted()),
+            Span::raw(compact_count(input)),
+            Span::raw("  "),
+            Span::styled("out ", muted()),
+            Span::raw(compact_count(output)),
+            Span::raw("  "),
+            Span::styled("tools ", muted()),
+            Span::raw(tools.to_string()),
+            Span::raw("  "),
+            Span::styled("subs ", muted()),
+            Span::raw(sub_agents.to_string()),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
+            .wrap(Wrap { trim: true }),
+        chunks[0],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .ratio(f64::from(percent) / 100.0)
+            .label(Span::styled(
+                format!("{} tokens", compact_count(total_tokens)),
+                strong(STUDIO_TEXT),
+            ))
+            .gauge_style(Style::default().fg(color).bg(STUDIO_PANEL_ALT)),
+        chunks[1],
+    );
+    frame.render_widget(
+        Paragraph::new(command)
+            .style(Style::default().fg(STUDIO_MUTED).bg(STUDIO_PANEL))
+            .wrap(Wrap { trim: true }),
+        chunks[2],
+    );
+}
+
+fn render_token_and_tools(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let mut rows = state
+        .resolved
+        .members
+        .iter()
+        .map(|member| {
+            let result = provider_result(state, member);
+            Row::new(vec![
+                member.to_string(),
+                result.map_or("ready".to_string(), |result| result.status.clone()),
+                result.map_or("0".to_string(), |result| {
+                    compact_count(result.token_usage.input)
+                }),
+                result.map_or("0".to_string(), |result| {
+                    compact_count(result.token_usage.output)
+                }),
+                result.map_or("0".to_string(), |result| {
+                    compact_count(result.token_usage.total)
+                }),
+                result.map_or("0".to_string(), |result| {
+                    result.tool_calls.len().to_string()
+                }),
+                result.map_or("0".to_string(), |result| {
+                    result.sub_agents.len().to_string()
+                }),
+            ])
+            .style(Style::default().fg(provider_color(member)).bg(STUDIO_PANEL))
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        rows.push(Row::new(vec!["none", "ready", "0", "0", "0", "0", "0"]));
+    }
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(9),
+            Constraint::Length(7),
+            Constraint::Length(7),
+        ],
+    )
+    .header(
+        Row::new(vec![
+            "agent", "status", "input", "output", "total", "tools", "subs",
+        ])
+        .style(strong(STUDIO_MUTED)),
+    )
+    .block(panel_block(
+        "Token usage / tools",
+        state.focus == Pane::Agents,
+    ))
+    .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL));
+    frame.render_widget(table, area);
+}
+
+fn render_results_panel(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let raw_lines = result_lines(state);
+    let available = area.height.saturating_sub(2) as usize;
+    let visible = visible_lines(&raw_lines, state.result_index, available);
+    let lines = visible
+        .into_iter()
+        .map(|(index, line)| {
+            let style = if state.focus == Pane::Results && index == state.result_index {
+                strong(STUDIO_ACCENT)
+            } else if line.contains("[ok]") {
+                strong(STUDIO_GREEN)
+            } else if line.contains("[err]") || line.contains("failed") {
+                strong(STUDIO_RED)
+            } else {
+                Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL)
+            };
+            Line::from(Span::styled(line, style))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block(
+                "Results and execution log",
+                state.focus == Pane::Results,
+            ))
+            .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_configuration(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let active = matches!(
+        state.focus,
+        Pane::Settings | Pane::Capabilities | Pane::Linear
+    );
+    let block = panel_block("Configure on the go", active);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(if state.show_help { 8 } else { 4 }),
+        ])
+        .split(inner);
+    let tab_index = match state.focus {
+        Pane::Capabilities => 1,
+        Pane::Linear => 2,
+        _ => 0,
+    };
+    frame.render_widget(
+        Tabs::new(vec!["Settings", "Capabilities", "Linear"])
+            .select(tab_index)
+            .style(Style::default().fg(STUDIO_MUTED).bg(STUDIO_PANEL))
+            .highlight_style(strong(STUDIO_ACCENT))
+            .divider(Span::styled("/", muted())),
+        chunks[0],
+    );
+
+    let (lines, selected, config_active) = match tab_index {
+        1 => (
+            capability_lines(state),
+            state.capability_index,
+            state.focus == Pane::Capabilities,
+        ),
+        2 => (
+            linear_lines(state),
+            state.linear_index,
+            state.focus == Pane::Linear,
+        ),
+        _ => (
+            settings_lines(state),
+            state.setting_index,
+            state.focus == Pane::Settings,
+        ),
+    };
+    let available = chunks[1].height as usize;
+    let items = visible_lines(&lines, selected, available)
+        .into_iter()
+        .map(|(index, line)| config_list_item(line, config_active && index == selected))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL)),
+        chunks[1],
+    );
+
+    let help = if state.show_help {
+        vec![
+            Line::from("Tab cycles panels. Up/Down selects."),
+            Line::from("Left/Right changes toggles and numeric values."),
+            Line::from("Enter edits paths, lists, prompts, and Linear filters."),
+            Line::from("r runs, e edits prompt, ? toggles help."),
+            Line::from("Ctrl+C twice exits without surprise."),
+        ]
+    } else {
+        vec![
+            Line::from(vec![
+                Span::styled("Tip", strong(STUDIO_GOLD)),
+                Span::raw(" press ? for help"),
+            ]),
+            Line::from("Enter edits values. Arrows modify live."),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(help)
+            .style(Style::default().fg(STUDIO_MUTED).bg(STUDIO_PANEL_ALT))
+            .wrap(Wrap { trim: true })
+            .block(Block::new().style(Style::default().bg(STUDIO_PANEL_ALT))),
+        chunks[2],
+    );
+}
+
+fn render_prompt(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let editing = state.input_mode.is_some();
+    let block = panel_block(if editing { "Editing" } else { "Prompt" }, editing);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let context = format!(
+        "files:{} commands:{} cwd:{}",
+        state.resolved.raw.files.len(),
+        state.resolved.raw.commands.len(),
+        display_cwd(&state.resolved.cwd)
+    );
+    let mut lines = vec![Line::from(vec![Span::styled(context, muted())])];
+    if let Some(mode) = &state.input_mode {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{mode:?}: "), strong(STUDIO_GOLD)),
+            Span::styled(format!("{}_", state.input_buffer), strong(STUDIO_TEXT)),
+        ]));
+        lines.push(Line::from("Enter saves. Esc cancels."));
+    } else {
+        lines.push(Line::from(if state.prompt.trim().is_empty() {
+            "(empty prompt)".to_string()
+        } else {
+            state.prompt.trim().to_string()
+        }));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
+    let focus = match state.focus {
+        Pane::Menu => "menu",
+        Pane::Settings => "settings",
+        Pane::Agents => "agents",
+        Pane::Capabilities => "capabilities",
+        Pane::Linear => "linear",
+        Pane::Results => "results",
+    };
+    let line = Line::from(vec![
+        Span::styled("focus ", muted()),
+        Span::styled(focus, strong(STUDIO_ACCENT)),
+        Span::raw("   "),
+        Span::styled("r", strong(STUDIO_GOLD)),
+        Span::raw(" run  "),
+        Span::styled("e", strong(STUDIO_GOLD)),
+        Span::raw(" prompt  "),
+        Span::styled("Tab", strong(STUDIO_GOLD)),
+        Span::raw(" focus  "),
+        Span::styled("Enter", strong(STUDIO_GOLD)),
+        Span::raw(" edit/activate  "),
+        Span::styled("?", strong(STUDIO_GOLD)),
+        Span::raw(" help  "),
+        Span::styled("Ctrl+C twice", strong(STUDIO_GOLD)),
+        Span::raw(" quit"),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_BG)),
+        area,
+    );
+}
+
+fn panel_block<'a>(title: impl Into<Line<'a>>, focused: bool) -> Block<'a> {
+    let border = if focused {
+        STUDIO_ACCENT
+    } else {
+        STUDIO_BORDER
+    };
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(title)
+        .title_style(strong(if focused { STUDIO_ACCENT } else { STUDIO_MUTED }))
+        .border_style(Style::default().fg(border))
+        .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
+}
+
+fn strong(color: Color) -> Style {
+    Style::default()
+        .fg(color)
+        .bg(STUDIO_PANEL)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn muted() -> Style {
+    Style::default().fg(STUDIO_MUTED).bg(STUDIO_PANEL)
+}
+
+fn selected_style() -> Style {
+    Style::default()
+        .fg(STUDIO_BG)
+        .bg(STUDIO_ACCENT)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn status_span(status: &str) -> Span<'static> {
+    let color = if status.contains("failed") || status.contains("attention") {
+        STUDIO_RED
+    } else if status.contains("completed") || status.contains("Ready") {
+        STUDIO_GREEN
+    } else {
+        STUDIO_GOLD
+    };
+    Span::styled(format!(" status: {status} "), strong(color))
+}
+
+fn chip(label: &'static str, value: &str, color: Color) -> Span<'static> {
+    Span::styled(format!(" {label}:{value} "), strong(color))
+}
+
+fn provider_color(member: &str) -> Color {
+    match member {
+        "codex" => STUDIO_BLUE,
+        "claude" => STUDIO_PURPLE,
+        "gemini" => STUDIO_GOLD,
+        _ => STUDIO_ACCENT,
+    }
+}
+
+fn team_chip_value(workflow: &Workflow, width: u16) -> String {
+    if width < 132 {
+        let total = workflow.teams.values().sum::<usize>();
+        return format!("{total} sub-agents");
+    }
+    workflow
+        .teams
+        .iter()
+        .map(|(name, size)| format!("{name}:{size}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn status_color(status: &str) -> Color {
+    match status {
+        "ok" => STUDIO_GREEN,
+        "err" | "timeout" | "missing" => STUDIO_RED,
+        "ready" => STUDIO_MUTED,
+        _ => STUDIO_GOLD,
+    }
+}
+
+fn provider_result<'a>(state: &'a StudioState, member: &str) -> Option<&'a EngineResult> {
+    state
+        .last_result
+        .as_ref()?
+        .members
+        .iter()
+        .find(|result| result.name == member)
+}
+
+fn provider_effort(state: &StudioState, member: &str) -> String {
+    let value = match member {
+        "codex" => state.resolved.raw.codex_effort.as_deref(),
+        "claude" => state.resolved.raw.claude_effort.as_deref(),
+        "gemini" => state.resolved.raw.gemini_effort.as_deref(),
+        _ => None,
+    };
+    value.unwrap_or("default").to_string()
+}
+
+fn provider_model(state: &StudioState, member: &str) -> String {
+    let value = match member {
+        "codex" => state.resolved.raw.codex_model.as_deref(),
+        "claude" => state.resolved.raw.claude_model.as_deref(),
+        "gemini" => state.resolved.raw.gemini_model.as_deref(),
+        _ => None,
+    };
+    value.unwrap_or("default").to_string()
+}
+
+fn total_session_tokens(state: &StudioState) -> usize {
+    let Some(result) = &state.last_result else {
+        return 0;
+    };
+    result
+        .members
+        .iter()
+        .map(|member| member.token_usage.total)
+        .sum::<usize>()
+        + result.summary.token_usage.total
+}
+
+fn compact_count(value: usize) -> String {
+    if value >= 1_000_000 {
+        format!("{:.1}m", value as f64 / 1_000_000.0)
+    } else if value >= 1_000 {
+        format!("{:.1}k", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+fn display_cwd(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn visible_lines(lines: &[String], selected: usize, available_rows: usize) -> Vec<(usize, String)> {
+    if lines.is_empty() || available_rows == 0 {
+        return Vec::new();
+    }
+    let selected = selected.min(lines.len().saturating_sub(1));
+    let window = available_rows.min(lines.len());
+    let start = selected
+        .saturating_sub(window / 2)
+        .min(lines.len().saturating_sub(window));
+    lines
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(window)
+        .map(|(index, line)| (index, line.clone()))
         .collect()
+}
+
+fn config_list_item(line: String, selected: bool) -> ListItem<'static> {
+    let clean = line.trim_start_matches('>').trim_start().to_string();
+    let style = if selected {
+        selected_style()
+    } else {
+        Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL)
+    };
+    if let Some((label, value)) = clean.split_once(':') {
+        ListItem::new(Line::from(vec![
+            Span::styled(if selected { "> " } else { "  " }, strong(STUDIO_ACCENT)),
+            Span::styled(
+                label.to_string(),
+                strong(if selected { STUDIO_BG } else { STUDIO_TEXT }),
+            ),
+            Span::styled(": ", style),
+            Span::styled(value.trim().to_string(), style),
+        ]))
+        .style(style)
+    } else {
+        ListItem::new(Line::from(vec![
+            Span::styled(if selected { "> " } else { "  " }, strong(STUDIO_ACCENT)),
+            Span::styled(clean, style),
+        ]))
+        .style(style)
+    }
 }
 
 fn settings_lines(state: &StudioState) -> Vec<String> {
@@ -1199,6 +1893,9 @@ fn settings_lines(state: &StudioState) -> Vec<String> {
                 state.resolved.raw.planner.as_deref().unwrap_or("none")
             ),
             format!("Summarizer: {}", state.resolved.raw.summarizer),
+            format!("Codex model: {}", opt(&state.resolved.raw.codex_model)),
+            format!("Claude model: {}", opt(&state.resolved.raw.claude_model)),
+            format!("Gemini model: {}", opt(&state.resolved.raw.gemini_model)),
             format!("Iterations: {}", state.resolved.raw.iterations),
             format!("Team default: {}", state.resolved.raw.team_work),
             format!(
@@ -1238,66 +1935,6 @@ fn settings_lines(state: &StudioState) -> Vec<String> {
             format!("Gemini effort: {}", opt(&state.resolved.raw.gemini_effort)),
         ],
     )
-}
-
-fn agent_lines(state: &StudioState) -> Vec<String> {
-    let mut lines = Vec::new();
-    let workflow = build_workflow(&state.resolved);
-    for member in &state.resolved.members {
-        let usage = state.last_result.as_ref().and_then(|result| {
-            result
-                .members
-                .iter()
-                .find(|candidate| &candidate.name == member)
-                .map(|candidate| {
-                    format!(
-                        " tokens:{} cmd:{}",
-                        candidate.token_usage.total,
-                        studio_clip(&candidate.command, 42)
-                    )
-                })
-        });
-        lines.push(format!(
-            "[x] {} role:{} team:{} auth:{}{}",
-            member,
-            state
-                .last_result
-                .as_ref()
-                .and_then(|result| result
-                    .members
-                    .iter()
-                    .find(|candidate| &candidate.name == member))
-                .map(|candidate| candidate.role.as_str())
-                .map(ToString::to_string)
-                .unwrap_or_else(|| role_for(member, &workflow)),
-            workflow.teams.get(member).copied().unwrap_or_default(),
-            provider_auth(&state.resolved, member),
-            usage.unwrap_or_default()
-        ));
-        if let Some(result) = state.last_result.as_ref().and_then(|result| {
-            result
-                .members
-                .iter()
-                .find(|candidate| &candidate.name == member)
-        }) {
-            lines.push(format!(
-                "    tools:{} sub-agents:{}",
-                result.tool_calls.len(),
-                result.sub_agents.len()
-            ));
-        }
-    }
-    if let Some(result) = &state.last_result {
-        lines.push(format!(
-            "Summary: {} tokens:{}",
-            result.summary.status, result.summary.token_usage.total
-        ));
-    }
-    if let Some(status) = &state.last_auth_result {
-        lines.push(String::new());
-        lines.extend(status.lines().take(8).map(ToString::to_string));
-    }
-    lines
 }
 
 fn capability_lines(state: &StudioState) -> Vec<String> {
@@ -1504,78 +2141,6 @@ fn result_lines(state: &StudioState) -> Vec<String> {
     lines
 }
 
-fn boxed_lines(title: &str, lines: &[String], width: usize, height: usize) -> Vec<String> {
-    if height == 0 {
-        return Vec::new();
-    }
-    if width < 5 {
-        return (0..height).map(|_| fit_line(title, width)).collect();
-    }
-    let inner = width - 4;
-    let title_inner = width - 5;
-    let mut out = Vec::new();
-    out.push(format!(
-        "+-- {:<title_inner$}+",
-        studio_clip(title, title_inner)
-    ));
-    for line in lines.iter().take(height.saturating_sub(2)) {
-        out.push(format!("| {:<inner$} |", studio_clip(line, inner)));
-    }
-    while out.len() < height.saturating_sub(1) {
-        out.push(format!("| {:<inner$} |", ""));
-    }
-    out.push(format!("+{}+", "-".repeat(inner + 2)));
-    out
-}
-
-fn prompt_lines(state: &StudioState, width: usize) -> Vec<String> {
-    let prompt = if state.prompt.trim().is_empty() {
-        "(empty prompt)"
-    } else {
-        state.prompt.trim()
-    };
-    let context = format!(
-        "files:{} commands:{}",
-        state.resolved.raw.files.len(),
-        state.resolved.raw.commands.len()
-    );
-    let mut lines = vec![
-        "-".repeat(width),
-        format!("Prompt | {context}"),
-        prompt.to_string(),
-    ];
-    if let Some(mode) = &state.input_mode {
-        lines.push(format!(
-            "Editing {:?}: {}_",
-            mode,
-            studio_clip(&state.input_buffer, width.saturating_sub(20))
-        ));
-    }
-    lines
-        .into_iter()
-        .map(|line| studio_clip(&line, width))
-        .collect()
-}
-
-#[cfg(test)]
-fn write_prompt(out: &mut impl Write, state: &StudioState, width: usize) -> Result<(), String> {
-    for line in prompt_lines(state, width) {
-        write_clipped_line(out, width, &line)?;
-    }
-    Ok(())
-}
-
-fn help_lines() -> [&'static str; 6] {
-    [
-        "",
-        "Help: Tab focus | Up/Down select | Left/Right modify | Enter activate/edit",
-        "r run | ? help | [ and ] move focused pane | Ctrl+C twice quits",
-        "Menu actions support prompt editing, file tagging, command context, social login, auth status, Linear delivery, and capability refresh.",
-        "Settings manage lead/planner/executors, per-provider sub-agent counts, permissions, auth, effort, and Linear delivery controls.",
-        "Capabilities manages inherit/override plus provider MCP, skills, tools, plugins, policies, and extension profiles.",
-    ]
-}
-
 fn render_noninteractive_studio_snapshot(resolved: &ResolvedArgs) -> String {
     [
         "Amon Hen Studio requires an interactive TTY.",
@@ -1660,7 +2225,7 @@ fn cycle_summarizer(current: &str, delta: isize) -> String {
 }
 
 fn settings_len() -> usize {
-    17
+    20
 }
 
 fn capabilities_len() -> usize {
@@ -1702,6 +2267,7 @@ fn list(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn cycles_values_wrapping() {
@@ -1719,90 +2285,54 @@ mod tests {
     }
 
     #[test]
-    fn boxes_clip_to_fixed_width_without_embedded_newlines() {
-        let lines = boxed_lines(
-            "Capabilities with a very long title",
-            &[
-                "Claude agents JSON: {\"huge\":\"value\"}\n...[truncated]".to_string(),
-                "Gemini admin policy: a very long policy value that must not wrap".to_string(),
-            ],
-            24,
-            5,
-        );
+    fn studio_clip_removes_embedded_newlines() {
+        let clipped = studio_clip("Claude agents JSON\n...[truncated]\tvalue", 24);
 
-        assert_eq!(lines.len(), 5);
-        for line in lines {
-            assert!(!line.contains('\n'));
-            assert_eq!(line.chars().count(), 24, "{line}");
-        }
+        assert!(!clipped.contains('\n'));
+        assert!(!clipped.contains('\t'));
+        assert!(clipped.chars().count() <= 24);
     }
 
     #[test]
-    fn pane_rows_never_exceed_terminal_width() {
-        let state = test_state(
-            "Inspect this repo and suggest the cleanest next patch with enough text to force clipping",
-        );
-        let mut output = Vec::new();
-        write_row(
-            &mut output,
-            &state,
-            &[Pane::Capabilities, Pane::Linear, Pane::Results],
-            79,
-            8,
-        )
-        .unwrap();
-        let rendered = String::from_utf8(output).unwrap();
+    fn dashboard_renders_telemetry_configuration_and_color() {
+        let mut state = test_state("Inspect this repo and suggest the cleanest next patch");
+        state.last_result = Some(test_result(&state));
 
-        for line in rendered.lines() {
-            assert!(
-                line.chars().count() <= 79,
-                "line exceeded terminal width: {line}"
-            );
-            assert!(!line.contains("...[truncated]"));
-        }
+        let (rendered, has_accent) = render_to_string(&state, 180, 46);
+
+        assert!(rendered.contains("Amon Hen"));
+        assert!(rendered.contains("Command rail"));
+        assert!(rendered.contains("Token usage / tools"));
+        assert!(rendered.contains("Configure on the go"));
+        assert!(rendered.contains("Results and execution log"));
+        assert!(rendered.contains("model"));
+        assert!(rendered.contains("1.5k"));
+        assert!(rendered.contains("cargo test"));
+        assert!(has_accent, "dashboard should render styled/colorized cells");
     }
 
     #[test]
-    fn full_screen_lines_never_exceed_terminal_width() {
-        let mut state = test_state(
-            "Inspect this repo and suggest the cleanest next patch with enough text to force clipping",
-        );
-        state.show_help = true;
-        state.pane_order = vec![
-            Pane::Results,
-            Pane::Capabilities,
-            Pane::Linear,
-            Pane::Menu,
-            Pane::Settings,
-            Pane::Agents,
-        ];
+    fn medium_dashboard_keeps_configuration_visible() {
+        let mut state = test_state("Inspect this repo");
+        state.focus = Pane::Settings;
 
-        for (width, height) in [(78, 24), (118, 28), (198, 42)] {
-            let lines = render_screen_lines(&state, width, height);
-            assert!(lines.len() <= height);
-            for line in lines {
-                assert!(!line.contains('\n'));
-                assert!(
-                    line.chars().count() <= width,
-                    "line exceeded terminal width {width}: {line}"
-                );
-            }
-        }
+        let (rendered, has_accent) = render_to_string(&state, 120, 34);
+
+        assert!(rendered.contains("Command rail"));
+        assert!(rendered.contains("Token usage / tools"));
+        assert!(rendered.contains("Configure on the go"));
+        assert!(rendered.contains("Codex model"));
+        assert!(has_accent, "medium dashboard should keep colored styling");
     }
 
     #[test]
-    fn prompt_rendering_never_exceeds_terminal_width() {
-        let state = test_state("A prompt that is intentionally far longer than a narrow terminal width so the Studio prompt renderer must clip it without relying on terminal wrapping");
-        let mut output = Vec::new();
-        write_prompt(&mut output, &state, 63).unwrap();
-        let rendered = String::from_utf8(output).unwrap();
+    fn compact_dashboard_stays_useful_on_small_terminals() {
+        let state = test_state("hello");
 
-        for line in rendered.lines() {
-            assert!(
-                line.chars().count() <= 63,
-                "prompt line exceeded terminal width: {line}"
-            );
-        }
+        let (rendered, _) = render_to_string(&state, 80, 18);
+
+        assert!(rendered.contains("Terminal too small"));
+        assert!(rendered.contains("Members:"));
     }
 
     #[test]
@@ -1816,6 +2346,92 @@ mod tests {
 
         let second = handle_event(&mut state, ctrl_c()).unwrap();
         assert!(matches!(second, StudioAction::Quit));
+    }
+
+    fn render_to_string(state: &StudioState, width: u16, height: u16) -> (String, bool) {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render_studio(frame, state)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for row in buffer.content().chunks(width as usize) {
+            for cell in row {
+                rendered.push_str(cell.symbol());
+            }
+            rendered.push('\n');
+        }
+        let has_accent = buffer
+            .content()
+            .iter()
+            .any(|cell| matches!(cell.fg, STUDIO_ACCENT | STUDIO_GOLD | STUDIO_PURPLE));
+        (rendered, has_accent)
+    }
+
+    fn test_result(state: &StudioState) -> AmonHenResult {
+        let codex = test_engine_result("codex", "planner", 1_000, 500, 1);
+        let claude = test_engine_result("claude", "lead", 900, 400, 2);
+        let gemini = test_engine_result("gemini", "executor", 700, 250, 0);
+        let summary = test_engine_result("codex", "synthesis", 500, 200, 0);
+        AmonHenResult {
+            query: state.prompt.clone(),
+            cwd: state.resolved.cwd.display().to_string(),
+            members_requested: state.resolved.members.clone(),
+            summarizer_requested: state.resolved.raw.summarizer.clone(),
+            workflow: build_workflow(&state.resolved),
+            prompt_commands: vec![CommandTelemetry {
+                command: "cargo test --workspace --locked".to_string(),
+                status: "ok".to_string(),
+                detail: String::new(),
+                exit_code: Some(0),
+                duration_ms: 1200,
+                stdout_chars: 120,
+                stderr_chars: 0,
+                timed_out: false,
+            }],
+            members: vec![codex, claude, gemini],
+            summary,
+        }
+    }
+
+    fn test_engine_result(
+        name: &str,
+        role: &str,
+        input: usize,
+        output: usize,
+        tools: usize,
+    ) -> EngineResult {
+        EngineResult {
+            name: name.to_string(),
+            bin: Some(name.to_string()),
+            status: "ok".to_string(),
+            duration_ms: 1000,
+            detail: String::new(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            output: "done".to_string(),
+            command: format!("{name} run cargo test"),
+            token_usage: TokenUsage {
+                input,
+                output,
+                total: input + output,
+                estimated: false,
+                source: "test".to_string(),
+            },
+            tool_calls: (0..tools)
+                .map(|index| ToolUsage {
+                    name: format!("tool-{index}"),
+                    kind: "command".to_string(),
+                    status: "ok".to_string(),
+                    detail: "cargo test".to_string(),
+                })
+                .collect(),
+            sub_agents: Vec::new(),
+            role: role.to_string(),
+            iteration: 1,
+            total_iterations: 1,
+            team_size: 1,
+        }
     }
 
     fn test_state(prompt: &str) -> StudioState {
@@ -1833,6 +2449,12 @@ mod tests {
             "2",
             "--team-work",
             "1",
+            "--codex-model",
+            "gpt-5.2",
+            "--claude-model",
+            "sonnet",
+            "--gemini-model",
+            "gemini-pro",
             prompt,
         ])
         .unwrap();

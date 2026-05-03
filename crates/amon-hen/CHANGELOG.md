@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+- Rebuilt Studio on Ratatui with a color dashboard, provider cards, live configuration panes, token/tool telemetry, and a compact fallback for smaller terminals.
+- Added direct prompt editing from Studio and kept session context path-safe by showing the repo name instead of local absolute paths.
+
 ## 0.1.7
 
 - Redrew Studio with absolute cursor positioning so terminal auto-wrap cannot turn panes into diagonal borders.
