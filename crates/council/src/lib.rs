@@ -1,4 +1,4 @@
-use clap::{ArgAction, CommandFactory, Parser, ValueEnum};
+use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, ValueEnum};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -517,8 +517,9 @@ where
     let parsed = match CliArgs::try_parse_from(parse_args) {
         Ok(parsed) => parsed,
         Err(error) => {
+            let exit_code = parse_error_exit_code(error.kind());
             let _ = error.print();
-            return 64;
+            return exit_code;
         }
     };
 
@@ -644,6 +645,13 @@ where
         0
     } else {
         1
+    }
+}
+
+fn parse_error_exit_code(kind: ErrorKind) -> i32 {
+    match kind {
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
+        _ => 64,
     }
 }
 
@@ -2791,6 +2799,17 @@ fn is_success(result: &CouncilResult) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_flags_use_success_exit_code() {
+        let long_help = CliArgs::try_parse_from(["council", "--help"]).unwrap_err();
+        let short_help = CliArgs::try_parse_from(["council", "-h"]).unwrap_err();
+
+        assert_eq!(long_help.kind(), ErrorKind::DisplayHelp);
+        assert_eq!(short_help.kind(), ErrorKind::DisplayHelp);
+        assert_eq!(parse_error_exit_code(long_help.kind()), 0);
+        assert_eq!(parse_error_exit_code(short_help.kind()), 0);
+    }
 
     #[test]
     fn parses_members_and_provider_flags() {

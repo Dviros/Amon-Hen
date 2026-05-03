@@ -24,7 +24,7 @@ Amon Hen turns local AI coding CLIs into a coordinated delivery team. Codex can 
 
 The shipped binary remains `council` for compatibility. The project identity is Amon Hen.
 
-This is a ground-up Rust rewrite. The original npm CLI core is gone from the tracked implementation; Node is used only for the separate Astro website under [`web/`](web/).
+This is a ground-up Rust implementation. Node is used only for the separate Astro website under [`web/`](web/).
 
 ## Why It Feels Different
 
@@ -200,7 +200,7 @@ The delivery loop can:
 ├── crates/council/      # Rust crate and council binary
 ├── web/                 # Astro site and Cloudflare Worker config
 ├── docs/screenshots/    # README visuals
-└── .github/workflows/   # CI, release, and site deployment
+└── .github/workflows/   # CI and release automation
 ```
 
 ## Development
@@ -221,29 +221,6 @@ cd web
 npm install
 npm run build
 ```
-
-## Site Deployment
-
-The canonical site is [amonhen.legit.place](https://amonhen.legit.place).
-
-The production path is Cloudflare Workers:
-
-- Cloudflare Worker config in [`web/wrangler.jsonc`](web/wrangler.jsonc)
-- Custom domain route for `amonhen.legit.place`
-- `workers_dev` disabled so the Worker is not exposed on the account `workers.dev` subdomain
-- Static security headers in [`web/public/_headers`](web/public/_headers)
-
-The GitHub Pages workflow remains available as a static preview path for CI-built artifacts, but it does not own the production custom domain.
-
-## Standalone Status
-
-Local git now points only at `https://github.com/Dviros/Amon-Hen`.
-
-GitHub still reports the hosted repository as a fork until the fork network is detached in GitHub. GitHub's supported options are the Settings -> Danger Zone -> Leave fork network flow when eligible, or the delete/recreate/mirror-push process described in GitHub's detach-fork documentation. Both are permanent repository-level operations, so do them only with a mirror backup and after accepting that GitHub metadata such as pull requests and settings may be lost.
-
-## Credits
-
-Amon Hen was inspired by the original [seeARMS/council](https://github.com/seeARMS/council) idea by Colin Armstrong. This repository has been rewritten from the ground up as a Rust-native project, with the original npm CLI core removed from the tracked implementation.
 
 ## Contributors
 
