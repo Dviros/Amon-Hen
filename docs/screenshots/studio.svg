@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Amon Hen Studio</title>
+  <desc id="desc">A terminal studio with provider settings, agents, telemetry, and command logs.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f251f"/>
+      <stop offset="0.54" stop-color="#101312"/>
+      <stop offset="1" stop-color="#16273a"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="24" stdDeviation="26" flood-color="#000" flood-opacity="0.32"/>
+    </filter>
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .sans { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    </style>
+  </defs>
+  <rect width="1280" height="720" fill="#f6f7f2"/>
+  <path d="M0 0h1280v720H0z" fill="url(#bg)"/>
+  <g opacity="0.18" stroke="#f6f7f2" stroke-width="1">
+    <path d="M80 0v720M160 0v720M240 0v720M320 0v720M400 0v720M480 0v720M560 0v720M640 0v720M720 0v720M800 0v720M880 0v720M960 0v720M1040 0v720M1120 0v720M1200 0v720"/>
+    <path d="M0 80h1280M0 160h1280M0 240h1280M0 320h1280M0 400h1280M0 480h1280M0 560h1280M0 640h1280"/>
+  </g>
+  <rect x="78" y="66" width="1124" height="588" rx="18" fill="#fbfcf7" filter="url(#shadow)"/>
+  <rect x="78" y="66" width="1124" height="56" rx="18" fill="#10251f"/>
+  <path d="M78 104h1124v28H78z" fill="#10251f"/>
+  <circle cx="112" cy="94" r="8" fill="#b7472a"/>
+  <circle cx="140" cy="94" r="8" fill="#d8b45f"/>
+  <circle cx="168" cy="94" r="8" fill="#2f7d69"/>
+  <text x="208" y="101" fill="#f6f7f2" font-size="18" font-weight="800" class="mono">Amon Hen Studio</text>
+  <text x="1016" y="101" fill="#d8b45f" font-size="15" font-weight="700" class="mono">ctrl+c twice to quit</text>
+
+  <rect x="102" y="148" width="218" height="460" rx="10" fill="#f6f7f2" stroke="#10251f" stroke-width="2"/>
+  <text x="124" y="182" fill="#587067" font-size="16" font-weight="800" class="mono">COMMANDS</text>
+  <g class="mono" font-size="18" font-weight="700">
+    <rect x="122" y="206" width="172" height="34" rx="7" fill="#d8b45f"/>
+    <text x="138" y="229" fill="#10251f">Settings</text>
+    <text x="138" y="274" fill="#30453e">Agents</text>
+    <text x="138" y="316" fill="#30453e">Linear</text>
+    <text x="138" y="358" fill="#30453e">Auth</text>
+    <text x="138" y="400" fill="#30453e">Files</text>
+    <text x="138" y="442" fill="#30453e">Tools</text>
+    <text x="138" y="484" fill="#30453e">Help</text>
+  </g>
+
+  <rect x="348" y="148" width="430" height="460" rx="10" fill="#ffffff" stroke="#10251f" stroke-width="2"/>
+  <text x="372" y="184" fill="#587067" font-size="16" font-weight="800" class="mono">PROVIDERS</text>
+  <text x="610" y="184" fill="#2f7d69" font-size="15" font-weight="800" class="mono">handoff:on iterations:2</text>
+  <g class="sans">
+    <text x="372" y="238" fill="#10251f" font-size="22" font-weight="850">Codex</text>
+    <rect x="460" y="216" width="74" height="28" rx="6" fill="#e7f1ea"/><text x="474" y="236" fill="#244f43" font-size="14" font-weight="800">planner</text>
+    <rect x="544" y="216" width="82" height="28" rx="6" fill="#e7f1ea"/><text x="558" y="236" fill="#244f43" font-size="14" font-weight="800">gpt-5.2</text>
+    <rect x="636" y="216" width="58" height="28" rx="6" fill="#e7f1ea"/><text x="650" y="236" fill="#244f43" font-size="14" font-weight="800">high</text>
+    <text x="372" y="296" fill="#10251f" font-size="22" font-weight="850">Claude</text>
+    <rect x="460" y="274" width="54" height="28" rx="6" fill="#f7e7df"/><text x="474" y="294" fill="#7c331e" font-size="14" font-weight="800">lead</text>
+    <rect x="524" y="274" width="72" height="28" rx="6" fill="#f7e7df"/><text x="538" y="294" fill="#7c331e" font-size="14" font-weight="800">sonnet</text>
+    <rect x="606" y="274" width="52" height="28" rx="6" fill="#f7e7df"/><text x="620" y="294" fill="#7c331e" font-size="14" font-weight="800">max</text>
+    <text x="372" y="354" fill="#10251f" font-size="22" font-weight="850">Gemini</text>
+    <rect x="460" y="332" width="86" height="28" rx="6" fill="#e6eefb"/><text x="474" y="352" fill="#254b93" font-size="14" font-weight="800">executor</text>
+    <rect x="556" y="332" width="104" height="28" rx="6" fill="#e6eefb"/><text x="570" y="352" fill="#254b93" font-size="14" font-weight="800">gemini-pro</text>
+    <rect x="670" y="332" width="58" height="28" rx="6" fill="#e6eefb"/><text x="684" y="352" fill="#254b93" font-size="14" font-weight="800">high</text>
+  </g>
+  <rect x="372" y="414" width="382" height="134" rx="8" fill="#101312"/>
+  <text x="394" y="450" fill="#d8b45f" font-size="16" font-weight="800" class="mono">prompt</text>
+  <text x="394" y="486" fill="#e8ede4" font-size="17" class="mono">deliver LINEAR-104 to review-or-ci</text>
+  <text x="394" y="522" fill="#9fb2aa" font-size="15" class="mono">@src/lib.rs  $ cargo test --workspace</text>
+
+  <rect x="806" y="148" width="372" height="460" rx="10" fill="#ffffff" stroke="#10251f" stroke-width="2"/>
+  <text x="830" y="184" fill="#587067" font-size="16" font-weight="800" class="mono">TELEMETRY + TOOLS</text>
+  <g class="mono" font-size="15" font-weight="700">
+    <text x="830" y="232" fill="#30453e">codex</text><rect x="902" y="220" width="178" height="12" rx="6" fill="#dfe5dc"/><rect x="902" y="220" width="132" height="12" rx="6" fill="#2f7d69"/><text x="1094" y="233" fill="#587067">18k</text>
+    <text x="830" y="278" fill="#30453e">claude</text><rect x="902" y="266" width="178" height="12" rx="6" fill="#dfe5dc"/><rect x="902" y="266" width="154" height="12" rx="6" fill="#b7472a"/><text x="1094" y="279" fill="#587067">24k</text>
+    <text x="830" y="324" fill="#30453e">gemini</text><rect x="902" y="312" width="178" height="12" rx="6" fill="#dfe5dc"/><rect x="902" y="312" width="108" height="12" rx="6" fill="#315fb5"/><text x="1094" y="325" fill="#587067">13k</text>
+  </g>
+  <rect x="830" y="372" width="320" height="154" rx="8" fill="#101312"/>
+  <text x="850" y="408" fill="#e8ede4" font-size="15" class="mono">$ git status --short</text>
+  <text x="850" y="442" fill="#e8ede4" font-size="15" class="mono">$ cargo test --workspace</text>
+  <text x="850" y="476" fill="#e8ede4" font-size="15" class="mono">Linear: comment + media attached</text>
+</svg>

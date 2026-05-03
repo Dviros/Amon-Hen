@@ -1,64 +1,78 @@
-# Amon Hen
+<div align="center">
+  <img src="web/public/amonhen.svg" width="92" alt="Amon Hen mark" />
+  <h1>Amon Hen</h1>
+  <p><strong>The Seat of Seeing for AI engineering work.</strong></p>
+  <p>
+    A Rust-native command center for Codex, Claude, Gemini, and Linear delivery loops.
+  </p>
+  <p>
+    <a href="https://amonhen.legit.place">Website</a>
+    ·
+    <a href="crates/council/README.md">CLI docs</a>
+    ·
+    <a href="https://github.com/Dviros/Amon-Hen/actions">CI</a>
+    ·
+    <a href="SECURITY.md">Security</a>
+  </p>
+</div>
 
-Rust-native orchestration for Codex, Claude, and Gemini.
+![Amon Hen Studio](docs/screenshots/studio.svg)
 
-Amon Hen is named after the Seat of Seeing: one place to bring multiple agents into view, let them plan, execute, hand off, and converge on a deliverable result. The shipped binary is still `council` for compatibility, but the project direction is now Amon Hen: a native Rust control plane for provider CLIs, autonomous Linear delivery, and an interactive terminal studio.
+## What This Is
 
-This repository is a ground-up Rust rewrite. The old npm CLI core is gone from the tracked project. Node is used only for the separate Astro marketing site under `web/`.
+Amon Hen turns local AI coding CLIs into a coordinated delivery team. Codex can plan, Claude can lead, Gemini can execute, and each provider can spawn its own same-provider sub-agents when the task needs more hands. You get one native terminal surface for roles, handoffs, iterations, auth, provider capability overrides, token telemetry, tool logs, local files, command context, and Linear delivery.
 
-## What It Does
+The shipped binary remains `council` for compatibility. The project identity is Amon Hen.
 
-- Consults Codex, Claude, and Gemini from their authenticated local CLIs.
-- Lets you choose a lead model, planner model, executors, handoff behavior, and iteration count.
-- Supports provider-specific model, effort, auth, permission, sandbox, MCP, Skills, and tool configuration.
-- Runs real same-provider sub-agent fanout with `--team-work` and per-provider team sizing.
-- Shows prompt file tags, prompt command usage, provider tool usage, sub-agent activity, and token telemetry.
-- Provides a native Rust Studio TUI with editable settings, movable panes, auth onboarding, Linear setup/status, provider capabilities, and double-Ctrl+C exit.
-- Runs Linear project or epic delivery loops with isolated issue workspaces, retries, reconciliation, observability, comments, media attachments, and review or CI completion gates.
+This is a ground-up Rust rewrite. The original npm CLI core is gone from the tracked implementation; Node is used only for the separate Astro website under [`web/`](web/).
 
-## Repository Layout
+## Why It Feels Different
 
-- [`crates/council/`](./crates/council) - the Rust crate and `council` binary.
-- [`web/`](./web) - the Amon Hen site deployed as a Cloudflare Worker at [amonhen.legit.place](https://amonhen.legit.place).
+- It runs the provider CLIs you already authenticate locally: `codex`, `claude`, and `gemini`.
+- It lets you choose a planner, lead, executors, handoff mode, iteration count, and provider-specific effort.
+- It exposes provider-native config instead of flattening everything into a fake common denominator.
+- It can watch Linear projects or epics until each issue lands at human review or a GitHub CI gate.
+- It shows the uncomfortable-but-useful stuff: token usage, tool commands, prompt commands, file context, retries, and reconciliation state.
+- It ships a native Rust Studio TUI for interactive work, not a static ASCII status dump.
 
-## Requirements
-
-- Rust stable.
-- At least one provider CLI installed and authenticated: `codex`, `claude`, or `gemini`.
-- Node `>=22` only when developing or deploying the website.
-
-The CLI shells out to provider tools already installed on your machine. If a provider CLI is missing or unauthenticated, Amon Hen reports that state instead of inventing a result.
-
-## Quick Start
-
-Run from a checkout:
-
-```bash
-cargo run -p council -- --members codex,claude,gemini "Inspect this repo and propose the cleanest next patch"
-```
-
-Install the local binary:
+## Install
 
 ```bash
 cargo install --path crates/council
-council --members codex,claude,gemini "Compare these implementation options"
 ```
 
-Launch the native Studio:
+From a checkout:
+
+```bash
+cargo run -p council -- --help
+```
+
+Provider binary paths can be overridden when needed:
+
+```bash
+COUNCIL_CODEX_BIN=/path/to/codex \
+COUNCIL_CLAUDE_BIN=/path/to/claude \
+COUNCIL_GEMINI_BIN=/path/to/gemini \
+council --auth-status --capabilities-status
+```
+
+## Command Cookbook
+
+Open the interactive Studio:
 
 ```bash
 council --studio --members codex,claude,gemini
 ```
 
-Check provider auth and capability status:
+Ask all providers and synthesize one answer:
 
 ```bash
-council --auth-status --capabilities-status
+council \
+  --members codex,claude,gemini \
+  "Inspect this repo and propose the cleanest next patch"
 ```
 
-## Provider Control
-
-Amon Hen keeps provider-native behavior available while making it visible and scriptable.
+Pick roles, handoff, iterations, and same-provider sub-agents:
 
 ```bash
 council \
@@ -68,32 +82,61 @@ council \
   --handoff \
   --iterations 2 \
   --team-work 2 \
-  --codex-model gpt-5.2 \
-  --codex-effort high \
-  --codex-sandbox workspace-write \
-  --claude-model sonnet \
-  --claude-effort max \
-  --claude-permission-mode acceptEdits \
-  --gemini-model gemini-pro \
-  --gemini-effort high \
-  "Implement the task, run tests, and summarize tradeoffs"
+  "Design and implement the next safe change"
 ```
 
-Provider capability flags include:
+Control model and effort per provider:
 
 ```bash
---codex-config
---codex-mcp-profile
---claude-mcp-config
---claude-allowed-tools
---claude-disallowed-tools
---gemini-settings
---gemini-tools-profile
+council \
+  --members codex,claude,gemini \
+  --codex-model gpt-5.2 \
+  --codex-effort high \
+  --claude-model sonnet \
+  --claude-effort max \
+  --gemini-model gemini-pro \
+  --gemini-effort high \
+  "Compare implementation options and choose one"
 ```
 
-## Linear Delivery
+Override provider permissions and capability surfaces:
 
-Amon Hen can run a long-lived Linear delivery loop against selected projects or epics. Each issue gets an isolated workspace, phase-specific provider prompts, retries, reconciliation state, and observability output.
+```bash
+council \
+  --members codex,claude,gemini \
+  --codex-sandbox workspace-write \
+  --codex-config ~/.codex/config.toml \
+  --codex-mcp-profile repo \
+  --claude-permission-mode acceptEdits \
+  --claude-mcp-config .claude/mcp.json \
+  --claude-allowed-tools Edit,Bash,Read \
+  --claude-disallowed-tools WebFetch \
+  --gemini-settings .gemini/settings.json \
+  --gemini-tools-profile repo \
+  "Make the patch, run tests, and report exactly what changed"
+```
+
+Launch provider social login flows:
+
+```bash
+council \
+  --auth-login \
+  --auth-login-providers codex,claude,gemini
+```
+
+Attach local files and command output to the prompt:
+
+```bash
+council \
+  --members codex,claude,gemini \
+  --file crates/council/src/lib.rs \
+  --file web/src/pages/index.astro \
+  --cmd "cargo test --workspace --locked" \
+  --cmd "npm --prefix web run build" \
+  "Review this change and identify the next fix"
+```
+
+Run a long-lived Linear delivery loop:
 
 ```bash
 council \
@@ -101,13 +144,64 @@ council \
   --linear-project ENG \
   --linear-until-complete \
   --linear-completion-gate review-or-ci \
+  --linear-limit 4 \
+  --linear-max-attempts 3 \
   --members codex,claude,gemini \
   --planner codex \
   --lead claude \
   --team-work 2
 ```
 
-The loop is designed to keep going until each selected task reaches a human review gate or a GitHub CI gate, depending on the configured completion policy.
+Emit machine-readable telemetry:
+
+```bash
+council \
+  --json \
+  --members codex,claude,gemini \
+  --team-work 1 \
+  "Summarize tool usage, tokens, and final recommendation"
+```
+
+![Amon Hen command line](docs/screenshots/terminal-run.svg)
+
+## Studio
+
+Studio is the native TUI for live work:
+
+- movable panes for settings, agents, results, Linear, auth, files, tools, capabilities, and help
+- manual auth method selection per provider
+- browser-tab social login handoff with code paste or deeplink support
+- lead/planner/executor role changes after launch
+- per-provider model, effort, sandbox, permissions, and capability settings
+- provider Skills, MCP, and tools inherit/override toggles
+- token, sub-agent, prompt-command, and tool-command telemetry
+- double-Ctrl+C exit so one accidental interrupt does not kill a long run
+
+## Linear Delivery
+
+Amon Hen can treat Linear as the work queue, not just a ticket reference.
+
+![Amon Hen Linear delivery loop](docs/screenshots/linear-delivery.svg)
+
+The delivery loop can:
+
+- poll targeted projects, epics, teams, states, assignees, or explicit issues
+- create isolated workspaces per issue
+- run planner, execution, verification, reconciliation, and reporting phases
+- retry with backoff and persist issue state
+- attach generated media and command outputs back to Linear
+- post progress comments and optional review-state updates
+- wait for GitHub CI or hand work to human review
+
+## Repository Layout
+
+```text
+.
+├── crates/council/      # Rust crate and council binary
+├── web/                 # Astro site, Cloudflare Worker config, Pages fallback
+├── docs/screenshots/    # README visuals
+└── .github/workflows/   # CI, release, and site deployment
+```
 
 ## Development
 
@@ -128,11 +222,22 @@ npm install
 npm run build
 ```
 
-## Maintainer Branch Posture
+## Site Deployment
 
-The fork's `main` branch is the active delivery branch. Do not open upstream pull requests from `main`; create a task branch if external review is needed. This checkout is configured so pushes go to the fork, with the upstream repository kept as a non-push reference.
+The canonical site is [amonhen.legit.place](https://amonhen.legit.place).
 
-GitHub does not expose a repository setting that makes a public fork's `main` branch impossible to select as a pull request source in every UI. The practical guardrails are: close upstream PRs, delete PR source branches, push only to the fork's `main`, and keep upstream remotes fetch-only.
+The repo keeps two deployment paths:
+
+- Cloudflare Worker config in [`web/wrangler.jsonc`](web/wrangler.jsonc)
+- GitHub Pages workflow in [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
+
+GitHub Pages is the DNS-backed fallback while Cloudflare Worker deploy permissions are being fixed.
+
+## Standalone Status
+
+Local git now points only at `https://github.com/Dviros/Amon-Hen`.
+
+GitHub still reports the hosted repository as a fork until the fork network is detached in GitHub. GitHub's supported options are the Settings -> Danger Zone -> Leave fork network flow when eligible, or the delete/recreate/mirror-push process described in GitHub's detach-fork documentation. Both are permanent repository-level operations, so do them only with a mirror backup and after accepting that GitHub metadata such as pull requests and settings may be lost.
 
 ## Credits
 
@@ -146,8 +251,8 @@ Amon Hen was inspired by the original [seeARMS/council](https://github.com/seeAR
 
 Do not commit provider tokens, Cloudflare tokens, Linear tokens, local absolute paths, or command history containing secrets. If a token has been pasted into a terminal, chat, or deploy log, rotate it after use.
 
-See [SECURITY.md](./SECURITY.md).
+See [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](LICENSE)

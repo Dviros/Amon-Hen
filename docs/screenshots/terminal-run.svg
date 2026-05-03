@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Amon Hen command line</title>
+  <desc id="desc">A terminal command showing provider model, effort, capability, and Linear delivery flags.</desc>
+  <defs>
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .sans { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    </style>
+  </defs>
+  <rect width="1280" height="640" fill="#10251f"/>
+  <rect x="70" y="58" width="1140" height="524" rx="18" fill="#101312" stroke="#d8b45f" stroke-width="3"/>
+  <rect x="70" y="58" width="1140" height="56" rx="18" fill="#162a24"/>
+  <path d="M70 96h1140v22H70z" fill="#162a24"/>
+  <circle cx="106" cy="86" r="8" fill="#b7472a"/>
+  <circle cx="134" cy="86" r="8" fill="#d8b45f"/>
+  <circle cx="162" cy="86" r="8" fill="#2f7d69"/>
+  <text x="194" y="92" fill="#f6f7f2" font-size="17" font-weight="800" class="mono">Amon Hen command cookbook</text>
+  <text x="96" y="164" fill="#d8b45f" font-size="18" class="mono">$</text>
+  <text x="126" y="164" fill="#e8ede4" font-size="18" class="mono">council \</text>
+  <text x="126" y="202" fill="#9fd0bf" font-size="18" class="mono">  --members codex,claude,gemini --planner codex --lead claude --handoff \</text>
+  <text x="126" y="240" fill="#9fd0bf" font-size="18" class="mono">  --iterations 2 --team-work 2 \</text>
+  <text x="126" y="278" fill="#e7c980" font-size="18" class="mono">  --codex-model gpt-5.2 --codex-effort high --codex-mcp-profile default \</text>
+  <text x="126" y="316" fill="#f0b39f" font-size="18" class="mono">  --claude-model sonnet --claude-effort max --claude-allowed-tools Edit,Bash \</text>
+  <text x="126" y="354" fill="#aac5ff" font-size="18" class="mono">  --gemini-model gemini-pro --gemini-effort high --gemini-tools-profile repo \</text>
+  <text x="126" y="392" fill="#e8ede4" font-size="18" class="mono">  --file crates/council/src/lib.rs --cmd "cargo test --workspace" \</text>
+  <text x="126" y="430" fill="#e8ede4" font-size="18" class="mono">  "Deliver the next Linear issue to review-or-ci"</text>
+  <text x="96" y="494" fill="#2f7d69" font-size="18" class="mono">ok</text>
+  <text x="140" y="494" fill="#9fb2aa" font-size="18" class="mono">planner ran, 3 providers consulted, 6 sub-agents spawned, tools and token usage captured</text>
+  <rect x="96" y="526" width="202" height="30" rx="7" fill="#2f7d69"/>
+  <text x="116" y="547" fill="#ffffff" font-size="14" font-weight="900" class="sans">JSON telemetry ready</text>
+  <rect x="318" y="526" width="204" height="30" rx="7" fill="#d8b45f"/>
+  <text x="338" y="547" fill="#10251f" font-size="14" font-weight="900" class="sans">Linear updated</text>
+  <rect x="542" y="526" width="190" height="30" rx="7" fill="#315fb5"/>
+  <text x="562" y="547" fill="#ffffff" font-size="14" font-weight="900" class="sans">CI gate watched</text>
+</svg>

@@ -4,6 +4,7 @@
 	"name": "amon-hen-web",
 	"account_id": "33539adfde5ac462659d7ccd6f8ae83f",
 	"main": "@astrojs/cloudflare/entrypoints/server",
+	"workers_dev": false,
 	"routes": [
 		{
 			"pattern": "amonhen.legit.place",
