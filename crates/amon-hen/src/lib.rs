@@ -3322,6 +3322,7 @@ where
         let mut pending = String::new();
         let mut buffer = [0u8; 4096];
         let mut last_stream_event = Instant::now() - PROVIDER_STREAM_EVENT_MIN_INTERVAL;
+        let mut stream_state = ProviderStreamState::new();
         loop {
             let read = match pipe.read(&mut buffer) {
                 Ok(0) => break,
@@ -3334,6 +3335,15 @@ where
             while let Some(newline) = pending.find('\n') {
                 let line = pending[..newline].trim_end_matches('\r').to_string();
                 pending = pending[newline + 1..].to_string();
+                if stream_state.maybe_emit_assistant_delta(
+                    &progress,
+                    stream,
+                    &line,
+                    &text,
+                    &mut last_stream_event,
+                ) {
+                    continue;
+                }
                 maybe_emit_provider_stream_line(
                     &progress,
                     stream,
@@ -3352,11 +3362,80 @@ where
                 );
             }
         }
+        stream_state.flush(&progress, stream, &text);
         if !pending.trim().is_empty() {
             emit_provider_stream_line(&progress, stream, &pending, &text);
         }
         text
     })
+}
+
+struct ProviderStreamState {
+    assistant_text: String,
+    emitted_assistant_chars: usize,
+}
+
+impl ProviderStreamState {
+    fn new() -> Self {
+        Self {
+            assistant_text: String::new(),
+            emitted_assistant_chars: 0,
+        }
+    }
+
+    fn maybe_emit_assistant_delta(
+        &mut self,
+        progress: &Option<CommandProgress>,
+        stream: &str,
+        line: &str,
+        accumulated: &str,
+        last_stream_event: &mut Instant,
+    ) -> bool {
+        let Some(progress) = progress else {
+            return false;
+        };
+        let Some(provider) = provider_from_live_label(&progress.label) else {
+            return false;
+        };
+        let Some(delta) = provider_assistant_text_delta(provider, line) else {
+            return false;
+        };
+        if delta.is_empty() {
+            return true;
+        }
+        self.assistant_text.push_str(&delta);
+        let now = Instant::now();
+        let chars_since_emit = self
+            .assistant_text
+            .chars()
+            .count()
+            .saturating_sub(self.emitted_assistant_chars);
+        if chars_since_emit >= 96
+            || now.duration_since(*last_stream_event) >= PROVIDER_STREAM_EVENT_MIN_INTERVAL
+        {
+            self.emit_snapshot(progress, stream, accumulated);
+            *last_stream_event = now;
+        }
+        true
+    }
+
+    fn flush(&mut self, progress: &Option<CommandProgress>, stream: &str, accumulated: &str) {
+        let Some(progress) = progress else {
+            return;
+        };
+        if self.assistant_text.chars().count() > self.emitted_assistant_chars {
+            self.emit_snapshot(progress, stream, accumulated);
+        }
+    }
+
+    fn emit_snapshot(&mut self, progress: &CommandProgress, stream: &str, accumulated: &str) {
+        let visible = format!(
+            "assistant live: {}",
+            sanitize_status_detail(&tail_chars(&self.assistant_text, 900))
+        );
+        emit_provider_stream_visible(progress, stream, accumulated, &visible, Vec::new());
+        self.emitted_assistant_chars = self.assistant_text.chars().count();
+    }
 }
 
 fn maybe_emit_provider_stream_chunk(
@@ -3420,6 +3499,24 @@ fn emit_provider_stream_line(
         return;
     }
     let provider = provider_from_live_label(&progress.label);
+    let tool_calls = provider
+        .map(|provider| extract_tool_usage(provider, line, ""))
+        .unwrap_or_default();
+    let visible = match provider_visible_stream(provider, line, &tool_calls) {
+        StreamDisplay::Visible(visible) => visible,
+        StreamDisplay::Suppress => return,
+    };
+    emit_provider_stream_visible(progress, stream, accumulated, &visible, tool_calls);
+}
+
+fn emit_provider_stream_visible(
+    progress: &CommandProgress,
+    stream: &str,
+    accumulated: &str,
+    visible: &str,
+    tool_calls: Vec<ToolUsage>,
+) {
+    let provider = provider_from_live_label(&progress.label);
     let role = role_from_live_label(&progress.label);
     let output_tokens = estimate_tokens(accumulated);
     let token_usage = provider.map(|_| TokenUsage {
@@ -3429,13 +3526,6 @@ fn emit_provider_stream_line(
         estimated: true,
         source: "live-stream-estimate".to_string(),
     });
-    let tool_calls = provider
-        .map(|provider| extract_tool_usage(provider, line, ""))
-        .unwrap_or_default();
-    let visible = match provider_visible_stream(provider, line, &tool_calls) {
-        StreamDisplay::Visible(visible) => visible,
-        StreamDisplay::Suppress => return,
-    };
     emit_runtime_event(
         &progress.sink,
         progress.sink.is_none(),
@@ -3453,7 +3543,7 @@ fn emit_provider_stream_line(
             format!(
                 "[amon-hen] stream {} {stream}: {}",
                 progress.label,
-                truncate(&visible, 220)
+                truncate(visible, 220)
             ),
         ),
     );
@@ -3490,6 +3580,50 @@ fn provider_visible_stream(
         .filter(|text| !text.trim().is_empty())
         .map(StreamDisplay::Visible)
         .unwrap_or(StreamDisplay::Suppress)
+}
+
+fn provider_assistant_text_delta(provider: &str, line: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    match provider {
+        "claude" => claude_assistant_text_delta(&value),
+        _ => None,
+    }
+}
+
+fn claude_assistant_text_delta(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) == Some("stream_event") {
+        return value.get("event").and_then(claude_assistant_text_delta);
+    }
+    match value.get("type").and_then(Value::as_str) {
+        Some("content_block_delta") => {
+            let delta = value.get("delta")?;
+            if delta.get("type").and_then(Value::as_str) == Some("text_delta") {
+                return delta
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+        }
+        Some("message_delta" | "message_start" | "message_stop" | "content_block_stop") => {}
+        _ => {
+            if let Some(text) = value.pointer("/delta/text").and_then(Value::as_str) {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    let tail = text
+        .chars()
+        .skip(total.saturating_sub(max_chars))
+        .collect::<String>();
+    format!("...{tail}")
 }
 
 fn visible_tool_summary(tool: &ToolUsage) -> String {
@@ -5728,6 +5862,45 @@ mod tests {
             event.message.contains("tool: shell")
                 && event.message.contains("line one")
                 && !event.message.contains("\"type\":\"item.completed\"")
+        }));
+    }
+
+    #[test]
+    fn claude_text_deltas_stream_as_coalesced_live_answer() {
+        if !command_available("sh") {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress: ProgressSink = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        });
+        let script = concat!(
+            "printf '%s\\n' '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Reviewing \"}}}';",
+            "printf '%s\\n' '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"gates now.\"}}}'"
+        );
+        let args = ["-c".to_string(), script.to_string()];
+
+        let result = run_command(CommandRequest::new("sh", &args, &cwd, 5_000).progress(Some(
+            CommandProgress {
+                label: "claude lead+planner iteration 1/1".to_string(),
+                sink: Some(progress),
+                input_tokens: 10,
+            },
+        )));
+
+        assert_eq!(result.code, Some(0));
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event
+                .message
+                .contains("assistant live: Reviewing gates now.")
+                && event.provider.as_deref() == Some("claude")
+        }));
+        assert!(!events.iter().any(|event| {
+            event.message.contains("stdout: assistant: Reviewing ")
+                || event.message.contains("stdout: assistant: gates now.")
         }));
     }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.19
+
+- Coalesce Claude streaming `text_delta` chunks into readable `assistant live:` snapshots instead of logging chopped mid-word fragments.
+- Update Studio live assistant output in place per provider/role/iteration so one running answer stays readable while token/tool telemetry continues updating.
+
 ## 0.1.18
 
 - Added `--gemini-approval-mode` so Gemini no longer has to run in read-only `plan` mode when executor/tool access is explicitly allowed.

@@ -122,11 +122,19 @@ struct StudioState {
     live_tool_counts: HashMap<String, usize>,
     live_sub_agents: HashMap<String, HashSet<String>>,
     last_stream_log_at: HashMap<String, Instant>,
+    live_assistant_lines: HashMap<String, usize>,
     status: String,
     input_mode: Option<InputMode>,
     input_buffer: String,
     show_help: bool,
     exit_armed_until: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveAssistantEvent {
+    key: String,
+    line: String,
+    detail: String,
 }
 
 struct StudioRunJob {
@@ -360,6 +368,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         live_tool_counts: HashMap::new(),
         live_sub_agents: HashMap::new(),
         last_stream_log_at: HashMap::new(),
+        live_assistant_lines: HashMap::new(),
         status: "Ready".to_string(),
         input_mode: None,
         input_buffer: String::new(),
@@ -479,6 +488,7 @@ fn start_studio_run(state: &mut StudioState) {
     state.live_tool_counts.clear();
     state.live_sub_agents.clear();
     state.last_stream_log_at.clear();
+    state.live_assistant_lines.clear();
     state.last_result = None;
     state.status = "Amon Hen running inside Studio".to_string();
     state.focus = Pane::Results;
@@ -1011,7 +1021,10 @@ fn drain_studio_job(state: &mut StudioState) {
 }
 
 fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
-    if should_log_progress_event(state, &event) {
+    let live_assistant = live_assistant_event(&event);
+    if let Some(live) = &live_assistant {
+        upsert_live_assistant_event(state, live);
+    } else if should_log_progress_event(state, &event) {
         push_run_event(state, sanitize_status_detail(&event.message));
     }
     if let Some(provider) = event.provider.clone() {
@@ -1037,11 +1050,63 @@ fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
         });
         state.provider_status.insert(provider.clone(), status);
         let role = event.role.unwrap_or_else(|| "agent".to_string());
-        state.provider_detail.insert(
-            provider,
-            format!("{} | {}", role, sanitize_status_detail(&event.message)),
-        );
+        let detail = live_assistant
+            .as_ref()
+            .map(|live| live.detail.clone())
+            .unwrap_or_else(|| sanitize_status_detail(&event.message));
+        state
+            .provider_detail
+            .insert(provider, format!("{} | {}", role, detail));
     }
+}
+
+fn live_assistant_event(event: &ProgressEvent) -> Option<LiveAssistantEvent> {
+    if event.stage != ProgressStage::Heartbeat
+        || event.status.as_deref() != Some("streaming")
+        || !event.tool_calls.is_empty()
+    {
+        return None;
+    }
+    let marker = "assistant live: ";
+    let marker_start = event.message.find(marker)?;
+    let prefix_end = marker_start + marker.len();
+    let detail = sanitize_status_detail(&event.message[prefix_end..]);
+    if detail.trim().is_empty() || detail == "No status detail returned." {
+        return None;
+    }
+    let provider = event.provider.as_deref().unwrap_or("unknown");
+    let role = event.role.as_deref().unwrap_or("agent");
+    let key = format!(
+        "{}:{}:{}:{}",
+        provider,
+        role,
+        event.iteration.unwrap_or(0),
+        event.total_iterations.unwrap_or(0)
+    );
+    Some(LiveAssistantEvent {
+        key,
+        line: format!(
+            "{} {}",
+            sanitize_status_detail(&event.message[..prefix_end]),
+            detail
+        ),
+        detail: format!("assistant: {detail}"),
+    })
+}
+
+fn upsert_live_assistant_event(state: &mut StudioState, event: &LiveAssistantEvent) {
+    let line = studio_clip(&event.line, 240);
+    if let Some(index) = state.live_assistant_lines.get(&event.key).copied() {
+        if let Some(slot) = state.run_events.get_mut(index) {
+            *slot = line;
+            state.result_index = result_len(state).saturating_sub(1);
+            return;
+        }
+    }
+    push_run_event(state, line);
+    state
+        .live_assistant_lines
+        .insert(event.key.clone(), state.run_events.len().saturating_sub(1));
 }
 
 fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
@@ -1050,6 +1115,14 @@ fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
         let overflow = state.run_events.len() - MAX_RUN_EVENTS;
         for _ in 0..overflow {
             state.run_events.pop_front();
+            state.live_assistant_lines.retain(|_, index| {
+                if *index == 0 {
+                    false
+                } else {
+                    *index -= 1;
+                    true
+                }
+            });
         }
     }
     state.result_index = result_len(state).saturating_sub(1);
@@ -3689,6 +3762,60 @@ mod tests {
     }
 
     #[test]
+    fn assistant_stream_snapshots_update_one_readable_log_line() {
+        let mut state = test_state("hello");
+        let first = progress_event_with_context(
+            Some("claude"),
+            Some("lead+planner"),
+            ProgressStage::Heartbeat,
+            Some("streaming"),
+            Some(2),
+            Some(10),
+            false,
+            None,
+            Some(TokenUsage {
+                input: 10,
+                output: 20,
+                total: 30,
+                estimated: true,
+                source: "test".to_string(),
+            }),
+            vec![],
+            "[amon-hen] stream claude lead+planner iteration 2/10 stdout: assistant live: Reviewing gate evidence",
+        );
+        let second = progress_event_with_context(
+            Some("claude"),
+            Some("lead+planner"),
+            ProgressStage::Heartbeat,
+            Some("streaming"),
+            Some(2),
+            Some(10),
+            false,
+            None,
+            Some(TokenUsage {
+                input: 10,
+                output: 40,
+                total: 50,
+                estimated: true,
+                source: "test".to_string(),
+            }),
+            vec![],
+            "[amon-hen] stream claude lead+planner iteration 2/10 stdout: assistant live: Reviewing gate evidence and patching the root cause",
+        );
+
+        apply_progress_event(&mut state, first);
+        apply_progress_event(&mut state, second);
+
+        assert_eq!(state.run_events.len(), 1);
+        assert!(state.run_events[0].contains("patching the root cause"));
+        assert!(state.run_events[0].contains("assistant live:"));
+        assert_eq!(
+            state.provider_detail.get("claude").map(String::as_str),
+            Some("lead+planner | assistant: Reviewing gate evidence and patching the root cause")
+        );
+    }
+
+    #[test]
     fn studio_job_drain_is_bounded_for_responsive_input() {
         let mut state = test_state("prompt");
         let (tx, rx) = std::sync::mpsc::channel();
@@ -3975,6 +4102,7 @@ mod tests {
             live_tool_counts: HashMap::new(),
             live_sub_agents: HashMap::new(),
             last_stream_log_at: HashMap::new(),
+            live_assistant_lines: HashMap::new(),
             status: "Ready".to_string(),
             input_mode: None,
             input_buffer: String::new(),
