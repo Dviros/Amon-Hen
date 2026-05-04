@@ -22,8 +22,9 @@ const releasesUrl = `${repoUrl}/releases`;
 const securityUrl = `${repoUrl}/blob/main/SECURITY.md`;
 const linkedInUrl = "https://www.linkedin.com/in/dviros/";
 const crateName = "amon-hen";
-const crateVersion = "0.1.25";
+const crateVersion = "0.1.24";
 const crateUrl = `https://crates.io/crates/${crateName}`;
+const crateInstallCommand = `cargo install ${crateName} --force`;
 const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
 const robotsContent = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
 
@@ -491,6 +492,26 @@ const resourceLinks = [
         width: 24px;
         height: 24px;
         object-fit: contain;
+      }
+
+      .provider-chip svg,
+      .button svg,
+      .resource-card svg {
+        width: 20px;
+        height: 20px;
+        flex: 0 0 auto;
+      }
+
+      .crates-mark {
+        color: #b7410e;
+      }
+
+      .crates-mark path {
+        fill: currentColor;
+      }
+
+      .icon-link:hover .crates-mark {
+        color: #ffffff;
       }
 
       .command-card {
@@ -984,6 +1005,17 @@ const resourceLinks = [
         padding: 18px;
       }
 
+      .resource-card.has-icon {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: 12px;
+      }
+
+      .resource-card.has-icon strong,
+      .resource-card.has-icon span {
+        grid-column: 2;
+      }
+
       .footer {
         border-top: 1px solid var(--line);
         background: #ffffff;
@@ -1246,6 +1278,11 @@ const resourceLinks = [
                 <path d="M20.45 20.45h-3.56v-5.58c0-1.33-.03-3.04-1.86-3.04-1.86 0-2.14 1.45-2.14 2.95v5.67H9.33V9h3.42v1.56h.05c.48-.9 1.64-1.86 3.37-1.86 3.6 0 4.27 2.37 4.27 5.46v6.29ZM5.32 7.43a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12ZM7.1 20.45H3.53V9H7.1v11.45ZM22.22 0H1.77C.8 0 0 .77 0 1.73v20.54C0 23.23.8 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z" />
               </svg>
             </a>
+            <a class="icon-link" href={crateUrl} target="_blank" rel="noreferrer" aria-label="Amon Hen on crates.io">
+              <svg class="crates-mark" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 1.55 21.2 6.5v10.98L12 22.45l-9.2-4.97V6.5L12 1.55Zm0 2.25L5.08 7.52 12 11.25l6.92-3.73L12 3.8ZM4.8 9.28v6.94l6.1 3.29v-6.94L4.8 9.28Zm14.4 0-6.1 3.29v6.94l6.1-3.29V9.28Z" />
+              </svg>
+            </a>
           </div>
         </div>
       </header>
@@ -1261,6 +1298,12 @@ const resourceLinks = [
               </p>
               <div class="hero-actions">
                 <a class="button primary" href="#run">Run the Studio</a>
+                <a class="button" href={crateUrl} target="_blank" rel="noreferrer">
+                  <svg class="crates-mark" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 1.55 21.2 6.5v10.98L12 22.45l-9.2-4.97V6.5L12 1.55Zm0 2.25L5.08 7.52 12 11.25l6.92-3.73L12 3.8ZM4.8 9.28v6.94l6.1 3.29v-6.94L4.8 9.28Zm14.4 0-6.1 3.29v6.94l6.1-3.29V9.28Z" />
+                  </svg>
+                  Install from crates.io
+                </a>
                 <a class="button" href={repoUrl} target="_blank" rel="noreferrer">View GitHub</a>
                 <a class="button" href={linkedInUrl} target="_blank" rel="noreferrer">Dviros on LinkedIn</a>
               </div>
@@ -1273,13 +1316,19 @@ const resourceLinks = [
                 ))}
                 <span class="provider-chip">Linear</span>
                 <span class="provider-chip">GitHub CI</span>
+                <a class="provider-chip" href={crateUrl} target="_blank" rel="noreferrer" aria-label="Amon Hen crate on crates.io">
+                  <svg class="crates-mark" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 1.55 21.2 6.5v10.98L12 22.45l-9.2-4.97V6.5L12 1.55Zm0 2.25L5.08 7.52 12 11.25l6.92-3.73L12 3.8ZM4.8 9.28v6.94l6.1 3.29v-6.94L4.8 9.28Zm14.4 0-6.1 3.29v6.94l6.1-3.29V9.28Z" />
+                  </svg>
+                  crates.io
+                </a>
               </div>
               <div class="command-card" aria-label="Studio command">
                 <div class="command-title">
                   <span>terminal</span>
                   <span>{examplePrompt}</span>
                 </div>
-                <pre><code>cargo install amon-hen --version 0.1.25 --force
+                <pre><code>{crateInstallCommand}
 amon-hen --studio --members codex,claude,gemini --planner-mode review-chain --max-prompt-chars 240000 --gemini-approval-mode auto_edit</code></pre>
               </div>
             </div>
@@ -1450,7 +1499,7 @@ amon-hen --studio --members codex,claude,gemini --planner-mode review-chain --ma
               <span>terminal</span>
               <span>native Rust</span>
             </div>
-            <pre><code>cargo install amon-hen --version 0.1.25 --force
+            <pre><code>{crateInstallCommand}
 amon-hen --auth-status --capabilities-status
 amon-hen --studio --members codex,claude,gemini --planner-mode review-chain --max-prompt-chars 240000
 amon-hen --members codex,claude,gemini --planner claude --planner-mode review-chain --lead claude --gemini-approval-mode auto_edit "Inspect this repo"</code></pre>
@@ -1462,7 +1511,12 @@ amon-hen --members codex,claude,gemini --planner claude --planner-mode review-ch
           <h2>Everything useful, one click away.</h2>
           <div class="resource-grid">
             {resourceLinks.map(([label, href, body]) => (
-              <a class="resource-card" href={href} target="_blank" rel="noreferrer">
+              <a class:list={["resource-card", { "has-icon": label === "crates.io" }]} href={href} target="_blank" rel="noreferrer">
+                {label === "crates.io" && (
+                  <svg class="crates-mark" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 1.55 21.2 6.5v10.98L12 22.45l-9.2-4.97V6.5L12 1.55Zm0 2.25L5.08 7.52 12 11.25l6.92-3.73L12 3.8ZM4.8 9.28v6.94l6.1 3.29v-6.94L4.8 9.28Zm14.4 0-6.1 3.29v6.94l6.1-3.29V9.28Z" />
+                  </svg>
+                )}
                 <strong>{label}</strong>
                 <span>{body}</span>
               </a>
