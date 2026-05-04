@@ -2947,15 +2947,24 @@ fn run_engine_single(
         sub_agents,
     );
     if live {
+        let failure_detail = if engine.status == "ok" {
+            String::new()
+        } else {
+            format!(
+                " detail={}",
+                truncate(&sanitize_status_detail(&engine.detail), 220)
+            )
+        };
         let done_message = format!(
-            "[amon-hen] done {} role={} status={} elapsed={:.1}s tokens={} tools={} sub-agents={}",
+            "[amon-hen] done {} role={} status={} elapsed={:.1}s tokens={} tools={} sub-agents={}{}",
             engine.name,
             engine.role,
             engine.status,
             engine.duration_ms as f64 / 1000.0,
             engine.token_usage.total,
             engine.tool_calls.len(),
-            engine.sub_agents.len()
+            engine.sub_agents.len(),
+            failure_detail
         );
         emit_runtime_event(
             &engine_progress,
@@ -3151,7 +3160,7 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
             .clone()
             .unwrap_or_else(|| "plan".to_string()),
         "--output-format".to_string(),
-        "json".to_string(),
+        "stream-json".to_string(),
     ]);
     let mut envs = HashMap::new();
     let effort_settings = prepare_gemini_settings(options);
@@ -3929,6 +3938,55 @@ fn claude_output_text(value: &Value) -> Option<String> {
 }
 
 fn gemini_visible_stream(value: &Value) -> Option<String> {
+    match value.get("type").and_then(Value::as_str) {
+        Some("message") => {
+            if value.get("role").and_then(Value::as_str) != Some("assistant") {
+                return None;
+            }
+            return non_empty_str(value.get("content"))
+                .map(|text| format!("assistant: {}", sanitize_status_detail(text)));
+        }
+        Some("tool_use") => return Some(format!("tool: {}", function_call_summary(value))),
+        Some("tool_result") => {
+            let status = value
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("observed");
+            let detail = value
+                .get("output")
+                .or_else(|| value.pointer("/error/message"))
+                .and_then(Value::as_str)
+                .map(sanitize_status_detail)
+                .unwrap_or_default();
+            let tool_id = value
+                .get("tool_id")
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            if detail.is_empty() {
+                return Some(format!("tool result {status}: {tool_id}"));
+            }
+            return Some(format!(
+                "tool result {status}: {tool_id} -> {}",
+                truncate(&detail, 140)
+            ));
+        }
+        Some("error") => {
+            if let Some(message) = non_empty_str(value.get("message")) {
+                return Some(format!("error: {}", sanitize_status_detail(message)));
+            }
+        }
+        Some("result") => {
+            if value.get("status").and_then(Value::as_str) == Some("error") {
+                if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+                    return Some(format!("error: {}", sanitize_status_detail(message)));
+                }
+                return Some("error: Gemini returned an error result.".to_string());
+            }
+            return None;
+        }
+        Some("init") => return None,
+        _ => {}
+    }
     if let Some(response) = non_empty_str(value.get("response")) {
         return Some(format!("assistant: {}", sanitize_status_detail(response)));
     }
@@ -4054,12 +4112,14 @@ fn function_call_summary(value: &Value) -> String {
     let name = value
         .get("name")
         .or_else(|| value.get("tool"))
+        .or_else(|| value.get("tool_name"))
         .or_else(|| value.get("function"))
         .and_then(Value::as_str)
         .unwrap_or("tool");
     let args = value
         .get("args")
         .or_else(|| value.get("arguments"))
+        .or_else(|| value.get("parameters"))
         .or_else(|| value.get("input"))
         .map(short_json_detail)
         .unwrap_or_default();
@@ -4145,6 +4205,9 @@ fn compact_failure(result: &CommandResult) -> String {
     if !result.stderr.trim().is_empty() {
         return result.stderr.trim().to_string();
     }
+    if let Some(detail) = provider_failure_detail(&result.stdout) {
+        return detail;
+    }
     if !result.stdout.trim().is_empty() {
         return result.stdout.trim().to_string();
     }
@@ -4152,6 +4215,26 @@ fn compact_failure(result: &CommandResult) -> String {
         .code
         .map(|code| format!("Exited with code {code}."))
         .unwrap_or_else(|| "Command failed.".to_string())
+}
+
+fn provider_failure_detail(stdout: &str) -> Option<String> {
+    for value in json_values(stdout).into_iter().rev() {
+        if let Some(message) = value
+            .pointer("/error/message")
+            .or_else(|| value.get("message"))
+            .and_then(Value::as_str)
+            .map(sanitize_status_detail)
+            .filter(|message| !message.trim().is_empty())
+        {
+            return Some(message);
+        }
+        if value.get("type").and_then(Value::as_str) == Some("result")
+            && value.get("status").and_then(Value::as_str) == Some("error")
+        {
+            return Some("Provider returned an error result.".to_string());
+        }
+    }
+    None
 }
 
 fn command_telemetry(result: &CommandResult) -> CommandTelemetry {
@@ -4249,8 +4332,39 @@ fn parse_gemini_output(stdout: &str) -> String {
         if let Some(response) = value.get("response").and_then(Value::as_str) {
             return response.trim().to_string();
         }
+        if let Some(text) = value.get("text").and_then(Value::as_str) {
+            return text.trim().to_string();
+        }
     }
-    trimmed.to_string()
+    let mut assistant = String::new();
+    let mut latest_error = String::new();
+    for value in json_values(trimmed) {
+        match value.get("type").and_then(Value::as_str) {
+            Some("message") if value.get("role").and_then(Value::as_str) == Some("assistant") => {
+                if let Some(content) = value.get("content").and_then(Value::as_str) {
+                    assistant.push_str(content);
+                }
+            }
+            Some("error") => {
+                if let Some(message) = value.get("message").and_then(Value::as_str) {
+                    latest_error = sanitize_status_detail(message);
+                }
+            }
+            Some("result") if value.get("status").and_then(Value::as_str) == Some("error") => {
+                if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+                    latest_error = sanitize_status_detail(message);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !assistant.trim().is_empty() {
+        assistant.trim().to_string()
+    } else if !latest_error.trim().is_empty() {
+        latest_error
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn extract_json(text: &str) -> Option<Value> {
@@ -5590,6 +5704,7 @@ mod tests {
         assert!(!result.args.iter().any(|arg| arg == &prompt));
         assert!(result.stdout.contains("ARGS:<--model><gemini-test><-p><>"));
         assert!(result.stdout.contains("<--approval-mode><plan>"));
+        assert!(result.stdout.contains("<--output-format><stream-json>"));
         assert!(result.stdout.ends_with(&prompt));
     }
 
@@ -5768,6 +5883,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_gemini_stream_json_response_and_error() {
+        let stream = r#"{"type":"init","model":"gemini-3.1-pro-preview"}
+{"type":"message","role":"assistant","content":"Reviewing gate evidence ","delta":true}
+{"type":"message","role":"assistant","content":"and readiness blockers.","delta":true}
+{"type":"result","status":"success","stats":{"total_tokens":30,"input_tokens":20,"output_tokens":10}}"#;
+        assert_eq!(
+            parse_gemini_output(stream),
+            "Reviewing gate evidence and readiness blockers."
+        );
+
+        let error = r#"{"type":"result","status":"error","error":{"type":"QuotaError","message":"You exceeded your current quota."},"stats":{"total_tokens":101400,"input_tokens":101400,"output_tokens":0}}"#;
+        assert_eq!(
+            parse_gemini_output(error),
+            "You exceeded your current quota."
+        );
+        assert_eq!(
+            provider_failure_detail(error).as_deref(),
+            Some("You exceeded your current quota.")
+        );
+    }
+
+    #[test]
     fn estimates_tokens_with_ceiling_chunks() {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("abc"), 1);
@@ -5825,6 +5962,8 @@ mod tests {
         let claude = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Inspecting the truth predicates now."},{"type":"tool_use","name":"Bash","input":{"command":"git status -sb"}}]}}"#;
         let codex = r#"{"type":"item.completed","item":{"id":"item_13","type":"command_execution","command":"/bin/bash -lc 'sed -n 1,40p execution/live_router.py'","aggregated_output":"def route_order():\n    pass\n"}}"#;
         let gemini = r#"{"candidates":[{"content":{"parts":[{"text":"Gate waterfall evidence is still thin."}]}}]}"#;
+        let gemini_stream = r#"{"type":"message","role":"assistant","content":"Reviewing the patch as a read-only critic.","delta":true}"#;
+        let gemini_error = r#"{"type":"result","status":"error","error":{"type":"ModelError","message":"Gemini model failed after the prompt was accepted."}}"#;
 
         assert_eq!(
             provider_visible_stream(Some("claude"), claude, &[]),
@@ -5843,6 +5982,18 @@ mod tests {
         assert_eq!(
             provider_visible_stream(Some("gemini"), gemini, &[]),
             StreamDisplay::Visible("assistant: Gate waterfall evidence is still thin.".to_string())
+        );
+        assert_eq!(
+            provider_visible_stream(Some("gemini"), gemini_stream, &[]),
+            StreamDisplay::Visible(
+                "assistant: Reviewing the patch as a read-only critic.".to_string()
+            )
+        );
+        assert_eq!(
+            provider_visible_stream(Some("gemini"), gemini_error, &[]),
+            StreamDisplay::Visible(
+                "error: Gemini model failed after the prompt was accepted.".to_string()
+            )
         );
     }
 
