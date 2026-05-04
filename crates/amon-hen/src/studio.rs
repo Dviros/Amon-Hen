@@ -1974,7 +1974,11 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
         3 => {
             state.resolved.raw.planner_mode = cycle_value(
                 &state.resolved.raw.planner_mode,
-                &[PLANNER_MODE_BLOCKING, PLANNER_MODE_PARALLEL],
+                &[
+                    PLANNER_MODE_BLOCKING,
+                    PLANNER_MODE_PARALLEL,
+                    PLANNER_MODE_REVIEW_CHAIN,
+                ],
                 delta,
             )
         }
@@ -2347,7 +2351,16 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
             STUDIO_BLUE,
         ),
         Span::raw("  "),
-        chip("handoff", on_off(state.resolved.raw.handoff), STUDIO_GREEN),
+        chip("mode", &state.resolved.raw.planner_mode, STUDIO_GOLD),
+        Span::raw("  "),
+        chip(
+            "handoff",
+            on_off(
+                state.resolved.raw.handoff
+                    || state.resolved.raw.planner_mode == PLANNER_MODE_REVIEW_CHAIN,
+            ),
+            STUDIO_GREEN,
+        ),
     ];
     let metric_chips = vec![
         chip(

@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen --version 0.1.19 --force
+cargo install amon-hen --version 0.1.20 --force
 amon-hen --help
 ```
 
@@ -65,14 +65,14 @@ amon-hen \
   "Design, implement, verify, and summarize the next safe change"
 ```
 
-Keep the lead/planner running in parallel with executors:
+Keep the lead/planner in a serial review chain with executors:
 
 ```bash
 amon-hen \
   --studio \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --summarizer claude \
   --handoff \
@@ -88,6 +88,7 @@ Planner modes:
 
 - `--planner-mode blocking` waits for the planner output before executor prompts are built. This is the default and is best when you want a true planner handoff first.
 - `--planner-mode parallel` starts the planner/lead in the same iteration as the executors. This is best when Claude leads/plans but Codex and Gemini should not sit queued.
+- `--planner-mode review-chain` runs members serially in planner/lead order. Each provider reviews the previous provider's handoff and the current repo state before making deliberate deltas, which is the safer mode for production VPS work.
 
 Fan out real same-provider sub-agents:
 
@@ -95,10 +96,10 @@ Fan out real same-provider sub-agents:
 amon-hen \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --team-work 2 \
-  "Split this task into parallel work and reconcile the final patch"
+  "Review each prior agent handoff, implement safely, and reconcile the final patch"
 ```
 
 ## Provider Controls
@@ -230,7 +231,7 @@ amon-hen \
   --json-stream \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --handoff \
   "Show live provider status, tokens, tools, and final result"
@@ -272,7 +273,7 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
   --cwd /path/to/repo \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --summarizer claude \
   --handoff \

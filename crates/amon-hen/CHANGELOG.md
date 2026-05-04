@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.20
+
+- Added `--planner-mode review-chain` for race-sensitive work: Amon Hen runs members serially in planner/lead order and feeds each agent the previous agent handoff as review context.
+- Review-chain mode implies handoff context and tells each provider to review prior agent output plus current repo state before making deliberate deltas.
+- Studio settings can now cycle planner mode through `blocking`, `parallel`, and `review-chain`, with the active mode visible in the header.
+
 ## 0.1.19
 
 - Coalesce Claude streaming `text_delta` chunks into readable `assistant live:` snapshots instead of logging chopped mid-word fragments.

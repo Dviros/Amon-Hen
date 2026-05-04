@@ -22,7 +22,7 @@ const releasesUrl = `${repoUrl}/releases`;
 const securityUrl = `${repoUrl}/blob/main/SECURITY.md`;
 const linkedInUrl = "https://www.linkedin.com/in/dviros/";
 const crateName = "amon-hen";
-const crateVersion = "0.1.19";
+const crateVersion = "0.1.20";
 const crateUrl = `https://crates.io/crates/${crateName}`;
 const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
 const robotsContent = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
@@ -100,7 +100,7 @@ const providerRows = [
     name: "Claude",
     logo: "/agent-logos/claude.png",
     role: "lead + planner",
-    meta: "opus, max effort, parallel planner mode",
+    meta: "opus, max effort, review-chain mode",
     accent: "rose",
   },
   {
@@ -120,7 +120,7 @@ const signalItems = [
 ];
 
 const studioPanels = [
-  ["Settings", "Lead, planner, blocking or parallel planner mode, iterations, model and effort per provider."],
+  ["Settings", "Lead, planner, blocking, parallel, or review-chain mode, iterations, model and effort per provider."],
   ["Capabilities", "Inherit local provider config or override MCP, Skills, tools, and agents."],
   ["Telemetry", "Token usage, prompt commands, shell tools, sub-agent fanout, and retries."],
   ["Linear", "Project and epic queues, issue workspaces, media attachments, comments, gates."],
@@ -1257,7 +1257,7 @@ const resourceLinks = [
               <div class="eyebrow">Rust-native AI delivery studio</div>
               <h1>{siteName}</h1>
               <p class="hero-copy">
-                Coordinate Codex, Claude, Gemini, and Linear from one native terminal. Pick the planner, appoint the lead, choose blocking or parallel planning, fan out same-provider sub-agents, and keep the loop moving until review or green CI.
+                Coordinate Codex, Claude, Gemini, and Linear from one native terminal. Pick the planner, appoint the lead, choose parallel speed or review-chain safety, fan out same-provider sub-agents, and keep the loop moving until review or green CI.
               </p>
               <div class="hero-actions">
                 <a class="button primary" href="#run">Run the Studio</a>
@@ -1279,8 +1279,8 @@ const resourceLinks = [
                   <span>terminal</span>
                   <span>{examplePrompt}</span>
                 </div>
-                <pre><code>cargo install amon-hen --version 0.1.19 --force
-amon-hen --studio --members codex,claude,gemini --planner-mode parallel --gemini-approval-mode auto_edit</code></pre>
+                <pre><code>cargo install amon-hen --version 0.1.20 --force
+amon-hen --studio --members codex,claude,gemini --planner-mode review-chain --gemini-approval-mode auto_edit</code></pre>
               </div>
             </div>
 
@@ -1323,7 +1323,7 @@ amon-hen --studio --members codex,claude,gemini --planner-mode parallel --gemini
                   </div>
                 </div>
                 <div class="handoff-line" aria-label="Workflow preview">
-                  <span>parallel plan</span>
+                  <span>review chain</span>
                   <span>execute</span>
                   <span>verify</span>
                   <span>deliver</span>
@@ -1425,7 +1425,7 @@ amon-hen --studio --members codex,claude,gemini --planner-mode parallel --gemini
   --linear-completion-gate review-or-ci \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --team-work 2</code></pre>
             </div>
@@ -1450,10 +1450,10 @@ amon-hen --studio --members codex,claude,gemini --planner-mode parallel --gemini
               <span>terminal</span>
               <span>native Rust</span>
             </div>
-            <pre><code>cargo install amon-hen --version 0.1.19 --force
+            <pre><code>cargo install amon-hen --version 0.1.20 --force
 amon-hen --auth-status --capabilities-status
-amon-hen --studio --members codex,claude,gemini --planner-mode parallel
-amon-hen --members codex,claude,gemini --planner claude --planner-mode parallel --lead claude --gemini-approval-mode auto_edit "Inspect this repo"</code></pre>
+amon-hen --studio --members codex,claude,gemini --planner-mode review-chain
+amon-hen --members codex,claude,gemini --planner claude --planner-mode review-chain --lead claude --gemini-approval-mode auto_edit "Inspect this repo"</code></pre>
           </div>
         </section>
 

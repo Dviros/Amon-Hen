@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen --version 0.1.19 --force
+cargo install amon-hen --version 0.1.20 --force
 ```
 
 From a checkout:
@@ -71,13 +71,13 @@ amon-hen \
   "Inspect this repo and propose the cleanest next patch"
 ```
 
-Run Claude as lead/planner without blocking Codex and Gemini:
+Run Claude as lead/planner with serial agent review:
 
 ```bash
 amon-hen \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --summarizer claude \
   --handoff \
@@ -89,7 +89,7 @@ amon-hen \
   "Design, implement, verify, and summarize the next safe change"
 ```
 
-Use `--planner-mode blocking` when executor prompts should wait for a planner handoff first. Use `--planner-mode parallel` when the planner/lead should run alongside the executors in the same iteration.
+Use `--planner-mode blocking` when executor prompts should wait for a planner handoff first. Use `--planner-mode parallel` when the planner/lead should run alongside the executors in the same iteration. Use `--planner-mode review-chain` for production/race-sensitive work: members run one after another, and each agent reviews the previous agent handoff plus the current repo state before making deliberate changes.
 
 Control model and effort per provider:
 
@@ -183,7 +183,7 @@ amon-hen \
   --json-stream \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --handoff \
   "Show provider progress while the run is still active"
@@ -201,7 +201,7 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
   --cwd /path/to/repo \
   --members codex,claude,gemini \
   --planner claude \
-  --planner-mode parallel \
+  --planner-mode review-chain \
   --lead claude \
   --summarizer claude \
   --handoff \
@@ -227,7 +227,7 @@ Studio is the native TUI for live work:
 - manual auth method selection per provider
 - browser-tab social login handoff with code paste or deeplink support
 - lead/planner/executor role changes after launch
-- `blocking` or `parallel` planner mode
+- `blocking`, `parallel`, or `review-chain` planner mode
 - per-provider model, effort, sandbox, permissions, and capability settings
 - provider Skills, MCP, and tools inherit/override toggles
 - token, sub-agent, prompt-command, provider-stream, and tool-command telemetry

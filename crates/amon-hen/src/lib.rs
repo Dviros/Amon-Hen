@@ -32,6 +32,7 @@ const CAPABILITY_INHERIT: &str = "inherit";
 const CAPABILITY_OVERRIDE: &str = "override";
 const PLANNER_MODE_BLOCKING: &str = "blocking";
 const PLANNER_MODE_PARALLEL: &str = "parallel";
+const PLANNER_MODE_REVIEW_CHAIN: &str = "review-chain";
 const GEMINI_APPROVAL_MODES: [&str; 4] = ["plan", "default", "auto_edit", "yolo"];
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -916,7 +917,8 @@ Auth and provider capabilities:
 Team workflow:
   --handoff                           Feed planner/lead context between providers.
   --planner codex|claude|gemini       Assign the planning role.
-  --planner-mode blocking|parallel     Wait for planner/handoff or run planner with executors.
+  --planner-mode blocking|parallel|review-chain
+                                      Wait, run beside executors, or serially review each agent.
   --lead codex|claude|gemini          Assign the lead reviewer/synthesizer role.
   --iterations N                      Run multiple provider rounds per prompt.
   --team-work N                       Spawn N same-provider sub-agents per provider.
@@ -983,7 +985,11 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
     validate_choice(
         "--planner-mode",
         &raw.planner_mode,
-        &[PLANNER_MODE_BLOCKING, PLANNER_MODE_PARALLEL],
+        &[
+            PLANNER_MODE_BLOCKING,
+            PLANNER_MODE_PARALLEL,
+            PLANNER_MODE_REVIEW_CHAIN,
+        ],
     )?;
     validate_provider_effort("codex", raw.codex_effort.as_deref())?;
     validate_provider_effort("claude", raw.claude_effort.as_deref())?;
@@ -2175,7 +2181,7 @@ fn build_workflow(resolved: &ResolvedArgs) -> Workflow {
         teams.insert("gemini".to_string(), value);
     }
     Workflow {
-        handoff: resolved.raw.handoff,
+        handoff: resolved.raw.handoff || resolved.raw.planner_mode == PLANNER_MODE_REVIEW_CHAIN,
         lead: resolved.raw.lead.clone(),
         planner: resolved.raw.planner.clone(),
         planner_mode: resolved.raw.planner_mode.clone(),
@@ -2266,7 +2272,7 @@ fn run_iteration(
         workflow.planner.as_deref(),
         workflow.lead.as_deref(),
     );
-    if workflow.handoff && workflow.planner_mode == PLANNER_MODE_BLOCKING {
+    if workflow.handoff && planner_mode_runs_serial(workflow) {
         let mut results = Vec::new();
         for member in ordered {
             let role = role_for(&member, workflow);
@@ -2396,6 +2402,13 @@ fn run_iteration(
     });
     results.extend(executor_results);
     results
+}
+
+fn planner_mode_runs_serial(workflow: &Workflow) -> bool {
+    matches!(
+        workflow.planner_mode.as_str(),
+        PLANNER_MODE_BLOCKING | PLANNER_MODE_REVIEW_CHAIN
+    )
 }
 
 fn engine_options(resolved: &ResolvedArgs, input: EngineOptionsInput<'_>) -> EngineRunOptions {
@@ -4108,6 +4121,14 @@ fn build_member_prompt(input: MemberPromptInput<'_>) -> String {
                 .to_string(),
         );
     }
+    if input.workflow.planner_mode == PLANNER_MODE_REVIEW_CHAIN {
+        sections.push(
+            "Review-chain mode is enabled. Each Amon Hen member runs after the previous member. \
+             Review prior agent output and the current repo state before changing anything, preserve accepted work, \
+             call out conflicts, and only make deliberate deltas that survive that review."
+                .to_string(),
+        );
+    }
     if !input.plan_output.trim().is_empty() {
         sections.push(format!("Planner handoff:\n{}", input.plan_output.trim()));
     }
@@ -4116,7 +4137,14 @@ fn build_member_prompt(input: MemberPromptInput<'_>) -> String {
         .iter()
         .chain(input.handoff_results.iter())
         .filter(|result| result.status == "ok" && !result.output.trim().is_empty())
-        .map(|result| format!("### {}\n{}", result.name, result.output.trim()))
+        .map(|result| {
+            format!(
+                "### {} ({})\n{}",
+                result.name,
+                result.role,
+                result.output.trim()
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
     if !context.is_empty() {
@@ -4624,6 +4652,7 @@ mod tests {
         assert!(help.contains("--members codex,claude,gemini"));
         assert!(help.contains("--claude-permission-mode MODE"));
         assert!(help.contains("--gemini-approval-mode MODE"));
+        assert!(help.contains("blocking|parallel|review-chain"));
         assert!(!help.contains("\n\n\n"));
     }
 
@@ -4711,6 +4740,70 @@ mod tests {
         assert_eq!(role_for("claude", &workflow), "lead+planner");
         assert_eq!(role_for("codex", &workflow), "executor");
         assert_eq!(role_for("gemini", &workflow), "executor");
+    }
+
+    #[test]
+    fn planner_review_chain_mode_serializes_agent_review() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex,claude,gemini",
+            "--planner",
+            "claude",
+            "--planner-mode",
+            "review-chain",
+            "--lead",
+            "claude",
+            "ship it",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let workflow = build_workflow(&resolved);
+        let ordered = execution_order(
+            &resolved.members,
+            workflow.planner.as_deref(),
+            workflow.lead.as_deref(),
+        );
+        let prior = vec![EngineResult {
+            name: "codex".to_string(),
+            bin: Some("codex".to_string()),
+            status: "ok".to_string(),
+            duration_ms: 1,
+            detail: String::new(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            output: "codex patch notes".to_string(),
+            command: "codex".to_string(),
+            token_usage: token_usage("a", "b"),
+            tool_calls: vec![],
+            sub_agents: vec![],
+            role: "executor".to_string(),
+            iteration: 1,
+            total_iterations: 1,
+            team_size: 0,
+        }];
+        let prompt = build_member_prompt(MemberPromptInput {
+            query: "ship it",
+            role: "executor",
+            workflow: &workflow,
+            iteration: 1,
+            team_size: 0,
+            previous_iteration: &[],
+            handoff_results: &prior,
+            plan_output: "",
+        });
+
+        assert_eq!(workflow.planner_mode, PLANNER_MODE_REVIEW_CHAIN);
+        assert!(
+            workflow.handoff,
+            "review-chain should imply handoff context"
+        );
+        assert!(planner_mode_runs_serial(&workflow));
+        assert_eq!(ordered, vec!["claude", "codex", "gemini"]);
+        assert!(prompt.contains("Review-chain mode is enabled"));
+        assert!(prompt.contains("### codex (executor)"));
+        assert!(prompt.contains("codex patch notes"));
     }
 
     #[test]
