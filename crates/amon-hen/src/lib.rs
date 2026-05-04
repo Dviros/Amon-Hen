@@ -1302,6 +1302,7 @@ fn status_from_command(
 
 fn sanitize_status_detail(detail: &str) -> String {
     let cleaned = strip_terminal_control_sequences(detail);
+    let cleaned = normalize_escaped_log_text(&cleaned);
     let detail = cleaned.trim();
     if detail.is_empty() {
         return "No status detail returned.".to_string();
@@ -1315,6 +1316,18 @@ fn sanitize_status_detail(detail: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     redact_local_paths(&detail)
+}
+
+fn normalize_escaped_log_text(value: &str) -> String {
+    value
+        .replace("\\\\r", " ")
+        .replace("\\\\n", " ")
+        .replace("\\\\t", " ")
+        .replace("\\r", " ")
+        .replace("\\n", " ")
+        .replace("\\t", " ")
+        .replace("\\\\\"", "\"")
+        .replace("\\\"", "\"")
 }
 
 fn strip_terminal_control_sequences(value: &str) -> String {
@@ -1334,6 +1347,10 @@ fn strip_terminal_control_sequences(value: &str) -> String {
             index = skip_terminal_escape(&chars, after_escape);
             continue;
         }
+        if let Some(after_escape) = bare_escaped_escape_end(&chars, index) {
+            index = skip_terminal_escape(&chars, after_escape);
+            continue;
+        }
         let ch = chars[index];
         if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
             output.push(' ');
@@ -1343,6 +1360,20 @@ fn strip_terminal_control_sequences(value: &str) -> String {
         index += 1;
     }
     output
+}
+
+fn bare_escaped_escape_end(chars: &[char], index: usize) -> Option<usize> {
+    if starts_with_chars(chars, index, &['u', '0', '0', '1', 'b'])
+        || starts_with_chars(chars, index, &['u', '0', '0', '1', 'B'])
+    {
+        return Some(index + 5);
+    }
+    if starts_with_chars(chars, index, &['u', '{', '1', 'b', '}'])
+        || starts_with_chars(chars, index, &['u', '{', '1', 'B', '}'])
+    {
+        return Some(index + 5);
+    }
+    None
 }
 
 fn escaped_escape_end(chars: &[char], index: usize) -> Option<usize> {
@@ -3600,6 +3631,13 @@ fn maybe_emit_provider_stream_chunk(
     accumulated: &str,
     last_stream_event: &mut Instant,
 ) {
+    if progress
+        .as_ref()
+        .and_then(|progress| provider_from_live_label(&progress.label))
+        .is_some()
+    {
+        return;
+    }
     let clipped = chunk.trim();
     if clipped.len() >= 24 {
         maybe_emit_provider_stream_line(progress, stream, clipped, accumulated, last_stream_event);
@@ -5742,9 +5780,13 @@ mod tests {
         let escaped =
             sanitize_status_detail(r"\u001b[26;107Hstatus \u001b[38;2;246;196;83mready\u001b[0m");
         let actual = sanitize_status_detail("\x1b[31mfailed\x1b[0m after check");
+        let double_escaped = sanitize_status_detail(r"before \\u001b[39mready\\u001b[0m\\nnext");
+        let bare_escaped = sanitize_status_detail("before u001b[39mreadyu001b[0m next");
 
         assert_eq!(escaped, "status ready");
         assert_eq!(actual, "failed after check");
+        assert_eq!(double_escaped, "before ready next");
+        assert_eq!(bare_escaped, "before ready next");
         assert!(!escaped.contains(r"\u001b"));
         assert!(!actual.contains('\x1b'));
     }
@@ -5822,6 +5864,33 @@ mod tests {
         assert!(visible.contains("total used free"));
         assert!(!visible.contains(r"\u001b"));
         assert!(!visible.contains("[26;107H"));
+    }
+
+    #[test]
+    fn provider_stream_suppresses_partial_provider_chunks() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress = Some(CommandProgress {
+            label: "codex planner:sub-agent-1 iteration 1/10".to_string(),
+            sink: Some(Arc::new(move |event| {
+                captured.lock().unwrap().push(event);
+            })),
+            input_tokens: 100,
+        });
+        let mut last_stream_event = Instant::now() - PROVIDER_STREAM_EVENT_MIN_INTERVAL;
+
+        maybe_emit_provider_stream_chunk(
+            &progress,
+            "stdout",
+            r#"{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"\\u001b[39m"#,
+            r#"{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"\\u001b[39m"#,
+            &mut last_stream_event,
+        );
+
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "partial provider JSON chunks should not reach Studio"
+        );
     }
 
     #[test]

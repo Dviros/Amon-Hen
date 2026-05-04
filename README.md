@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen --version 0.1.24 --force
+cargo install amon-hen --version 0.1.25 --force
 ```
 
 From a checkout:

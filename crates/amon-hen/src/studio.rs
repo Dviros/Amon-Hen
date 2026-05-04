@@ -1168,7 +1168,7 @@ fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
     if let Some(live) = &live_assistant {
         upsert_live_assistant_event(state, live);
     } else if should_log_progress_event(state, &event) {
-        push_run_event(state, sanitize_status_detail(&event.message));
+        push_run_event(state, studio_progress_display_line(&event));
     }
     if let Some(provider) = event.provider.clone() {
         if let Some(usage) = event.token_usage.clone() {
@@ -1201,6 +1201,43 @@ fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
             .provider_detail
             .insert(provider, format!("{} | {}", role, detail));
     }
+}
+
+fn studio_progress_display_line(event: &ProgressEvent) -> String {
+    let raw = sanitize_status_detail(&event.message);
+    let provider = event.provider.as_deref().unwrap_or("amon-hen");
+    let role = event.role.as_deref().unwrap_or("run");
+    if event.stage == ProgressStage::Heartbeat && event.status.as_deref() == Some("streaming") {
+        let marker = " stdout: ";
+        let stderr_marker = " stderr: ";
+        if let Some((_, detail)) = raw.split_once(marker) {
+            return format!(
+                "{provider} {role}: {}",
+                strip_redundant_stream_prefix(detail)
+            );
+        }
+        if let Some((_, detail)) = raw.split_once(stderr_marker) {
+            return format!(
+                "{provider} {role}: stderr: {}",
+                strip_redundant_stream_prefix(detail)
+            );
+        }
+    }
+    if let Some((_, detail)) = raw.split_once("[amon-hen] running ") {
+        return format!("{provider} {role}: running {detail}");
+    }
+    raw
+}
+
+fn strip_redundant_stream_prefix(detail: &str) -> String {
+    let mut clean = detail.trim();
+    if let Some((_, after)) = clean.rsplit_once(" stdout: ") {
+        clean = after.trim();
+    }
+    if let Some((_, after)) = clean.rsplit_once(" stderr: ") {
+        clean = after.trim();
+    }
+    sanitize_status_detail(clean)
 }
 
 fn live_assistant_event(event: &ProgressEvent) -> Option<LiveAssistantEvent> {
@@ -4198,6 +4235,32 @@ mod tests {
         let log = fs::read_to_string(temp.path().join("studio.log")).unwrap();
         assert!(events.contains("\"provider\":\"claude\""));
         assert!(log.contains("readable log line"));
+    }
+
+    #[test]
+    fn studio_progress_lines_remove_stream_envelope_and_escapes() {
+        let event = progress_event_with_context(
+            Some("codex"),
+            Some("planner:sub-agent-3"),
+            ProgressStage::Heartbeat,
+            Some("streaming"),
+            Some(1),
+            Some(10),
+            true,
+            None,
+            None,
+            vec![],
+            r#"[amon-hen] stream codex planner:sub-agent-3 iteration 1/10 stdout: tool: shell /bin/bash -lc 'git status -sb' -> \\u001b[39m## main\\u001b[0m\\nclean"#,
+        );
+
+        let line = studio_progress_display_line(&event);
+        assert_eq!(
+            line,
+            "codex planner:sub-agent-3: tool: shell /bin/bash -lc 'git status -sb' -> ## main clean"
+        );
+        assert!(!line.contains("[amon-hen] stream"));
+        assert!(!line.contains(r"\u001b"));
+        assert!(!line.contains("\\n"));
     }
 
     #[test]

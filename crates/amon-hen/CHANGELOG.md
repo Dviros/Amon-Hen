@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.25
+
+- Suppressed incomplete provider stdout chunks so Studio no longer renders chopped Codex JSON, half command outputs, or arbitrary terminal fragments before a full provider event arrives.
+- Cleaned Studio stream lines by removing the redundant `[amon-hen] stream ... stdout:` envelope and rendering structured `provider role: message` lines instead.
+- Hardened log sanitization for double-escaped ANSI/control sequences and literal escaped newlines so Results no longer shows `\\u001b...` or `\\n` noise.
+
 ## 0.1.24
 
 - Added durable Studio diagnostics in `AMON_HEN_RUN_DIR`: readable `studio.log`, structured `events.ndjson`, final `result.json`, `summary.txt`, and failure-focused `last-error.txt`.
