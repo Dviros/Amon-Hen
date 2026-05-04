@@ -2337,7 +2337,8 @@ fn studio_clip(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
-    let cleaned = text
+    let stripped = strip_terminal_control_sequences(text);
+    let cleaned = stripped
         .chars()
         .map(|ch| {
             if ch == '\n' || ch == '\r' || ch == '\t' || ch.is_control() {
@@ -3792,6 +3793,18 @@ mod tests {
         assert!(!clipped.contains('\n'));
         assert!(!clipped.contains('\t'));
         assert!(clipped.chars().count() <= 24);
+    }
+
+    #[test]
+    fn studio_clip_strips_escaped_terminal_sequences() {
+        let clipped = studio_clip(
+            r"\u001b[26;107Hstatus \u001b[38;2;246;196;83mready\u001b[0m",
+            80,
+        );
+
+        assert_eq!(clipped, "status ready");
+        assert!(!clipped.contains(r"\u001b"));
+        assert!(!clipped.contains("[38;2"));
     }
 
     #[test]

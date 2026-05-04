@@ -1281,7 +1281,8 @@ fn status_from_command(
 }
 
 fn sanitize_status_detail(detail: &str) -> String {
-    let detail = detail.trim();
+    let cleaned = strip_terminal_control_sequences(detail);
+    let detail = cleaned.trim();
     if detail.is_empty() {
         return "No status detail returned.".to_string();
     }
@@ -1294,6 +1295,117 @@ fn sanitize_status_detail(detail: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     redact_local_paths(&detail)
+}
+
+fn strip_terminal_control_sequences(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '\x1b' {
+            index = skip_terminal_escape(&chars, index + 1);
+            continue;
+        }
+        if chars[index] == '\u{9b}' {
+            index = skip_csi_sequence(&chars, index + 1);
+            continue;
+        }
+        if let Some(after_escape) = escaped_escape_end(&chars, index) {
+            index = skip_terminal_escape(&chars, after_escape);
+            continue;
+        }
+        let ch = chars[index];
+        if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
+            output.push(' ');
+        } else {
+            output.push(ch);
+        }
+        index += 1;
+    }
+    output
+}
+
+fn escaped_escape_end(chars: &[char], index: usize) -> Option<usize> {
+    if chars.get(index) != Some(&'\\') {
+        return None;
+    }
+    let mut cursor = index;
+    while chars.get(cursor) == Some(&'\\') {
+        cursor += 1;
+    }
+    if starts_with_chars(chars, cursor, &['u', '0', '0', '1', 'b'])
+        || starts_with_chars(chars, cursor, &['u', '0', '0', '1', 'B'])
+    {
+        return Some(cursor + 5);
+    }
+    if starts_with_chars(chars, cursor, &['u', '{', '1', 'b', '}'])
+        || starts_with_chars(chars, cursor, &['u', '{', '1', 'B', '}'])
+    {
+        return Some(cursor + 5);
+    }
+    if starts_with_chars(chars, cursor, &['x', '1', 'b'])
+        || starts_with_chars(chars, cursor, &['x', '1', 'B'])
+    {
+        return Some(cursor + 3);
+    }
+    if starts_with_chars(chars, cursor, &['0', '3', '3']) {
+        return Some(cursor + 3);
+    }
+    if starts_with_chars(chars, cursor, &['e']) {
+        return Some(cursor + 1);
+    }
+    None
+}
+
+fn starts_with_chars(chars: &[char], index: usize, needle: &[char]) -> bool {
+    chars
+        .get(index..index.saturating_add(needle.len()))
+        .is_some_and(|slice| slice == needle)
+}
+
+fn skip_terminal_escape(chars: &[char], index: usize) -> usize {
+    let Some(ch) = chars.get(index).copied() else {
+        return index;
+    };
+    match ch {
+        '[' => skip_csi_sequence(chars, index + 1),
+        ']' => skip_terminated_control_string(chars, index + 1),
+        'P' | '^' | '_' | 'X' => skip_terminated_control_string(chars, index + 1),
+        '(' | ')' | '*' | '+' | '-' | '.' | '/' => (index + 2).min(chars.len()),
+        '@'..='_' => (index + 1).min(chars.len()),
+        _ => index,
+    }
+}
+
+fn skip_csi_sequence(chars: &[char], mut index: usize) -> usize {
+    while index < chars.len() {
+        let ch = chars[index];
+        index += 1;
+        if ('@'..='~').contains(&ch) {
+            break;
+        }
+    }
+    index
+}
+
+fn skip_terminated_control_string(chars: &[char], mut index: usize) -> usize {
+    while index < chars.len() {
+        if chars[index] == '\u{7}' {
+            return index + 1;
+        }
+        if chars[index] == '\x1b' && chars.get(index + 1) == Some(&'\\') {
+            return index + 2;
+        }
+        if let Some(after_escape) = escaped_escape_end(chars, index) {
+            if chars.get(after_escape) == Some(&'\\') {
+                return after_escape + 1;
+            }
+            index = after_escape;
+            continue;
+        }
+        index += 1;
+    }
+    index
 }
 
 fn redact_possible_secret(value: &str) -> String {
@@ -5407,6 +5519,18 @@ mod tests {
     }
 
     #[test]
+    fn status_detail_strips_real_and_escaped_terminal_sequences() {
+        let escaped =
+            sanitize_status_detail(r"\u001b[26;107Hstatus \u001b[38;2;246;196;83mready\u001b[0m");
+        let actual = sanitize_status_detail("\x1b[31mfailed\x1b[0m after check");
+
+        assert_eq!(escaped, "status ready");
+        assert_eq!(actual, "failed after check");
+        assert!(!escaped.contains(r"\u001b"));
+        assert!(!actual.contains('\x1b'));
+    }
+
+    #[test]
     fn extracts_social_login_urls() {
         assert_eq!(
             extract_auth_urls("Open https://example.com/callback?code=123, then continue"),
@@ -5459,6 +5583,26 @@ mod tests {
             provider_visible_stream(Some("gemini"), gemini, &[]),
             StreamDisplay::Visible("assistant: Gate waterfall evidence is still thin.".to_string())
         );
+    }
+
+    #[test]
+    fn provider_stream_strips_escaped_terminal_sequences() {
+        let raw = r"\u001b[26;107Hstatus \u001b[38;2;246;196;83mready\u001b[0m";
+        assert_eq!(
+            provider_visible_stream(Some("codex"), raw, &[]),
+            StreamDisplay::Visible("status ready".to_string())
+        );
+
+        let codex = r#"{"type":"item.completed","item":{"id":"item_8","type":"command_execution","command":"/bin/bash -lc 'free -h'","aggregated_output":"\\u001b[26;107Htotal used free\\u001b[0m"}}"#;
+        let visible = match provider_visible_stream(Some("codex"), codex, &[]) {
+            StreamDisplay::Visible(text) => text,
+            StreamDisplay::Suppress => panic!("codex command output should be visible"),
+        };
+
+        assert!(visible.contains("tool: shell"));
+        assert!(visible.contains("total used free"));
+        assert!(!visible.contains(r"\u001b"));
+        assert!(!visible.contains("[26;107H"));
     }
 
     #[test]

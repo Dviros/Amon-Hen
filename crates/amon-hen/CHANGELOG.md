@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.22
+
+- Stripped real and escaped terminal control sequences from provider stream output before Studio logs render them.
+- Fixed Codex command/event output that displayed raw cursor-control text such as `\u001b[26;107H` in the Results pane.
+- Added regression coverage for escaped ANSI in provider stream parsing and Studio line clipping.
+
 ## 0.1.21
 
 - Fixed Studio Results scrolling: mouse wheel events are now captured by the TUI instead of disturbing the terminal buffer.

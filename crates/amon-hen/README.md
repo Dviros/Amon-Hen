@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen --version 0.1.21 --force
+cargo install amon-hen --version 0.1.22 --force
 amon-hen --help
 ```
 
