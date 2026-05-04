@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen --version 0.1.17 --force
+cargo install amon-hen --version 0.1.18 --force
 ```
 
 From a checkout:
@@ -119,10 +119,13 @@ amon-hen \
   --claude-mcp-config .claude/mcp.json \
   --claude-allowed-tools Edit,Bash,Read \
   --claude-disallowed-tools WebFetch \
+  --gemini-approval-mode auto_edit \
   --gemini-settings .gemini/settings.json \
   --gemini-tools-profile repo \
   "Make the patch, run tests, and report exactly what changed"
 ```
+
+Use `--gemini-approval-mode plan` for read-only Gemini analysis, `auto_edit` for executor runs that need approved edits/tools, or `yolo` only when you intentionally want Gemini's CLI to run without approval prompts.
 
 Launch provider social login flows:
 

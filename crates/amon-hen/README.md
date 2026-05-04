@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen --version 0.1.17 --force
+cargo install amon-hen --version 0.1.18 --force
 amon-hen --help
 ```
 
@@ -126,8 +126,11 @@ amon-hen \
   --members codex,claude,gemini \
   --codex-sandbox workspace-write \
   --claude-permission-mode acceptEdits \
+  --gemini-approval-mode auto_edit \
   "Make the change, run tests, and report exactly what changed"
 ```
+
+Gemini approval defaults to `plan`, which is intentionally read-only. Use `--gemini-approval-mode auto_edit` for executor runs that need tool/edit access, and reserve `--gemini-approval-mode yolo` for deliberately permissive sessions.
 
 Inherit or override provider-native capability surfaces:
 
@@ -283,6 +286,7 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
   --gemini-model gemini-3.1-pro-preview \
   --codex-sandbox workspace-write \
   --claude-permission-mode acceptEdits \
+  --gemini-approval-mode auto_edit \
   --codex-effort xhigh \
   --claude-effort max \
   --gemini-effort high \

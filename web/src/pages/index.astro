@@ -22,7 +22,7 @@ const releasesUrl = `${repoUrl}/releases`;
 const securityUrl = `${repoUrl}/blob/main/SECURITY.md`;
 const linkedInUrl = "https://www.linkedin.com/in/dviros/";
 const crateName = "amon-hen";
-const crateVersion = "0.1.17";
+const crateVersion = "0.1.18";
 const crateUrl = `https://crates.io/crates/${crateName}`;
 const licenseUrl = `${repoUrl}/blob/main/LICENSE`;
 const robotsContent = "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
@@ -107,7 +107,7 @@ const providerRows = [
     name: "Gemini",
     logo: "/agent-logos/gemini.svg",
     role: "executor",
-    meta: "gemini-3.1-pro-preview, high effort, settings profile",
+    meta: "gemini-3.1-pro-preview, high effort, auto_edit approval",
     accent: "blue",
   },
 ];
@@ -1279,8 +1279,8 @@ const resourceLinks = [
                   <span>terminal</span>
                   <span>{examplePrompt}</span>
                 </div>
-                <pre><code>cargo install amon-hen --version 0.1.17 --force
-amon-hen --studio --members codex,claude,gemini --planner-mode parallel</code></pre>
+                <pre><code>cargo install amon-hen --version 0.1.18 --force
+amon-hen --studio --members codex,claude,gemini --planner-mode parallel --gemini-approval-mode auto_edit</code></pre>
               </div>
             </div>
 
@@ -1450,10 +1450,10 @@ amon-hen --studio --members codex,claude,gemini --planner-mode parallel</code></
               <span>terminal</span>
               <span>native Rust</span>
             </div>
-            <pre><code>cargo install amon-hen --version 0.1.17 --force
+            <pre><code>cargo install amon-hen --version 0.1.18 --force
 amon-hen --auth-status --capabilities-status
 amon-hen --studio --members codex,claude,gemini --planner-mode parallel
-amon-hen --members codex,claude,gemini --planner claude --planner-mode parallel --lead claude "Inspect this repo"</code></pre>
+amon-hen --members codex,claude,gemini --planner claude --planner-mode parallel --lead claude --gemini-approval-mode auto_edit "Inspect this repo"</code></pre>
           </div>
         </section>
 

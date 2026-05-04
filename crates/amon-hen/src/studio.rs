@@ -243,6 +243,7 @@ struct StudioProfile {
     gemini_auth: String,
     codex_sandbox: String,
     claude_permission_mode: String,
+    gemini_approval_mode: String,
     codex_capabilities: String,
     codex_config: Vec<String>,
     codex_mcp_profile: Option<String>,
@@ -1451,6 +1452,7 @@ fn profile_from_state(state: &StudioState) -> StudioProfile {
         gemini_auth: raw.gemini_auth.clone(),
         codex_sandbox: raw.codex_sandbox.clone(),
         claude_permission_mode: raw.claude_permission_mode.clone(),
+        gemini_approval_mode: raw.gemini_approval_mode.clone(),
         codex_capabilities: raw.codex_capabilities.clone(),
         codex_config: raw.codex_config.clone(),
         codex_mcp_profile: raw.codex_mcp_profile.clone(),
@@ -1540,6 +1542,11 @@ fn apply_studio_profile(state: &mut StudioState, profile: &StudioProfile) {
     raw.gemini_auth = profile.gemini_auth.clone();
     raw.codex_sandbox = profile.codex_sandbox.clone();
     raw.claude_permission_mode = profile.claude_permission_mode.clone();
+    raw.gemini_approval_mode = if profile.gemini_approval_mode.trim().is_empty() {
+        "plan".to_string()
+    } else {
+        profile.gemini_approval_mode.clone()
+    };
     raw.codex_capabilities = profile.codex_capabilities.clone();
     raw.codex_config = profile.codex_config.clone();
     raw.codex_mcp_profile = profile.codex_mcp_profile.clone();
@@ -1955,41 +1962,48 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
             )
         }
         15 => {
+            state.resolved.raw.gemini_approval_mode = cycle_value(
+                &state.resolved.raw.gemini_approval_mode,
+                &GEMINI_APPROVAL_MODES,
+                delta,
+            )
+        }
+        16 => {
             state.resolved.raw.codex_auth = cycle_value(
                 &state.resolved.raw.codex_auth,
                 &["auto", "social-login", "login", "api-key"],
                 delta,
             )
         }
-        16 => {
+        17 => {
             state.resolved.raw.claude_auth = cycle_value(
                 &state.resolved.raw.claude_auth,
                 &["auto", "social-login", "oauth", "api-key", "keychain"],
                 delta,
             )
         }
-        17 => {
+        18 => {
             state.resolved.raw.gemini_auth = cycle_value(
                 &state.resolved.raw.gemini_auth,
                 &["auto", "social-login", "login", "api-key"],
                 delta,
             )
         }
-        18 => {
+        19 => {
             state.resolved.raw.codex_effort = cycle_optional(
                 &state.resolved.raw.codex_effort,
                 &["low", "medium", "high", "xhigh"],
                 delta,
             )
         }
-        19 => {
+        20 => {
             state.resolved.raw.claude_effort = cycle_optional(
                 &state.resolved.raw.claude_effort,
                 &["low", "medium", "high", "xhigh", "max"],
                 delta,
             )
         }
-        20 => {
+        21 => {
             state.resolved.raw.gemini_effort = cycle_optional(
                 &state.resolved.raw.gemini_effort,
                 &["low", "medium", "high"],
@@ -3148,6 +3162,10 @@ fn settings_lines(state: &StudioState) -> Vec<String> {
                 "Claude permission: {}",
                 state.resolved.raw.claude_permission_mode
             ),
+            format!(
+                "Gemini approval: {}",
+                state.resolved.raw.gemini_approval_mode
+            ),
             format!("Codex auth: {}", state.resolved.raw.codex_auth),
             format!("Claude auth: {}", state.resolved.raw.claude_auth),
             format!("Gemini auth: {}", state.resolved.raw.gemini_auth),
@@ -3480,7 +3498,7 @@ fn cycle_summarizer(current: &str, delta: isize) -> String {
 }
 
 fn settings_len() -> usize {
-    21
+    22
 }
 
 fn capabilities_len() -> usize {

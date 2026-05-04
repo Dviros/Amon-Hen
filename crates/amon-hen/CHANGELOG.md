@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.18
+
+- Added `--gemini-approval-mode` so Gemini no longer has to run in read-only `plan` mode when executor/tool access is explicitly allowed.
+- Wired Gemini approval mode through provider options, Studio settings, and persistent Studio profiles.
+- Documented the safer `auto_edit` Gemini executor mode for runs that need tool execution without jumping straight to fully permissive `yolo`.
+
 ## 0.1.17
 
 - Send Gemini prompts through stdin instead of argv so large Studio contexts and sub-agent prompts do not hit OS argument-length limits.

@@ -32,6 +32,7 @@ const CAPABILITY_INHERIT: &str = "inherit";
 const CAPABILITY_OVERRIDE: &str = "override";
 const PLANNER_MODE_BLOCKING: &str = "blocking";
 const PLANNER_MODE_PARALLEL: &str = "parallel";
+const GEMINI_APPROVAL_MODES: [&str; 4] = ["plan", "default", "auto_edit", "yolo"];
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Engine {
@@ -156,6 +157,8 @@ pub struct CliArgs {
     codex_sandbox: String,
     #[arg(long = "claude-permission-mode", default_value = "plan")]
     claude_permission_mode: String,
+    #[arg(long = "gemini-approval-mode", default_value = "plan")]
+    gemini_approval_mode: String,
 
     #[arg(long = "codex-auth", default_value = "auto")]
     codex_auth: String,
@@ -883,6 +886,7 @@ Models, effort, and permissions:
   --gemini-effort low|medium|high
   --codex-sandbox read-only|workspace-write|danger-full-access
   --claude-permission-mode MODE       Claude permission mode such as plan, acceptEdits, bypassPermissions.
+  --gemini-approval-mode MODE         Gemini approval mode: plan, default, auto_edit, or yolo.
 
 Auth and provider capabilities:
   --auth-login                        Start provider social-login flows.
@@ -984,6 +988,11 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
     validate_provider_effort("codex", raw.codex_effort.as_deref())?;
     validate_provider_effort("claude", raw.claude_effort.as_deref())?;
     validate_provider_effort("gemini", raw.gemini_effort.as_deref())?;
+    validate_choice(
+        "--gemini-approval-mode",
+        &raw.gemini_approval_mode,
+        &GEMINI_APPROVAL_MODES,
+    )?;
     validate_choice(
         "--claude-login-mode",
         &raw.claude_login_mode,
@@ -2438,7 +2447,8 @@ fn provider_permission(resolved: &ResolvedArgs, member: &str) -> Option<String> 
     match Engine::parse(member) {
         Some(Engine::Codex) => Some(resolved.raw.codex_sandbox.clone()),
         Some(Engine::Claude) => Some(resolved.raw.claude_permission_mode.clone()),
-        Some(Engine::Gemini) | None => None,
+        Some(Engine::Gemini) => Some(resolved.raw.gemini_approval_mode.clone()),
+        None => None,
     }
 }
 
@@ -2950,7 +2960,10 @@ fn run_gemini(bin: &str, options: &EngineRunOptions) -> CommandResult {
         String::new(),
         "--skip-trust".to_string(),
         "--approval-mode".to_string(),
-        "plan".to_string(),
+        options
+            .permission
+            .clone()
+            .unwrap_or_else(|| "plan".to_string()),
         "--output-format".to_string(),
         "json".to_string(),
     ]);
@@ -4476,6 +4489,7 @@ mod tests {
         assert!(help.contains("Linear delivery:"));
         assert!(help.contains("--members codex,claude,gemini"));
         assert!(help.contains("--claude-permission-mode MODE"));
+        assert!(help.contains("--gemini-approval-mode MODE"));
         assert!(!help.contains("\n\n\n"));
     }
 
@@ -4663,6 +4677,8 @@ mod tests {
             "gemini-2.5-pro",
             "--gemini-effort",
             "high",
+            "--gemini-approval-mode",
+            "auto_edit",
             "--gemini-settings",
             "gemini-settings.json",
             "--gemini-tools-profile",
@@ -4838,7 +4854,7 @@ mod tests {
         );
         assert_eq!(gemini_options.model.as_deref(), Some("gemini-2.5-pro"));
         assert_eq!(gemini_options.effort.as_deref(), Some("high"));
-        assert_eq!(gemini_options.permission, None);
+        assert_eq!(gemini_options.permission.as_deref(), Some("auto_edit"));
         assert_eq!(gemini_options.role, "executor");
         assert_eq!(gemini_options.team_size, 0);
         assert_eq!(gemini_options.capability.mode, CAPABILITY_OVERRIDE);
@@ -4985,7 +5001,7 @@ mod tests {
             timeout_ms: 1,
             effort: Some("high".to_string()),
             model: Some("gemini-2.5-pro".to_string()),
-            permission: None,
+            permission: Some("auto_edit".to_string()),
             auth: DEFAULT_AUTH_MODE.to_string(),
             capability: ProviderCapability {
                 mode: CAPABILITY_OVERRIDE.to_string(),
@@ -5037,6 +5053,10 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--admin-policy", "locked"]));
         assert!(gemini.args.windows(2).any(|pair| pair == ["-p", ""]));
+        assert!(gemini
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--approval-mode", "auto_edit"]));
     }
 
     #[test]
@@ -5098,6 +5118,7 @@ mod tests {
         assert!(result.args.iter().any(|arg| arg == "-p"));
         assert!(!result.args.iter().any(|arg| arg == &prompt));
         assert!(result.stdout.contains("ARGS:<--model><gemini-test><-p><>"));
+        assert!(result.stdout.contains("<--approval-mode><plan>"));
         assert!(result.stdout.ends_with(&prompt));
     }
 
