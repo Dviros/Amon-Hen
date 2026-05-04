@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.24
+
+- Added durable Studio diagnostics in `AMON_HEN_RUN_DIR`: readable `studio.log`, structured `events.ndjson`, final `result.json`, `summary.txt`, and failure-focused `last-error.txt`.
+- Detect and report Studio worker threads that crash or disconnect before sending a final result instead of leaving the dashboard silently stuck or dropping back to shell with no clue.
+- Catch Studio background panics and top-level process panics with visible stderr diagnostics and crash artifacts.
+- Ignore local `.amon-hen/` run artifacts in git.
+
 ## 0.1.23
 
 - Added `--max-prompt-chars` and final provider prompt budgeting so long iterative runs cannot exceed Codex, Claude, or Gemini prompt-size limits.

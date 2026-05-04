@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen --version 0.1.23 --force
+cargo install amon-hen --version 0.1.24 --force
 ```
 
 From a checkout:
@@ -233,6 +233,13 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
   --cmd 'git status -sb' \
   \"\$(cat \"$AMON_HEN_RUN_DIR/prompt.txt\")\""
 ```
+
+Studio also writes native diagnostics into `$AMON_HEN_RUN_DIR` when that environment variable is set, or `.amon-hen/runs/<run-id>/` inside the working repo otherwise:
+
+- `studio.log` keeps the readable Studio run log outside the alternate screen.
+- `events.ndjson` keeps structured provider progress, token, tool, and status events.
+- `result.json` and `summary.txt` are written when a run reaches a final result.
+- `last-error.txt` is written when Studio detects a crash, cancellation, disconnected worker, failed prompt context, or failed external action.
 
 ![Amon Hen command line](docs/screenshots/terminal-run.svg)
 

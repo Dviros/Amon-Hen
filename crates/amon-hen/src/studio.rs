@@ -20,7 +20,8 @@ use ratatui::{Frame, Terminal};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MENU: [&str; 18] = [
     "Run / re-run",
@@ -120,6 +121,7 @@ struct StudioState {
     last_capability_result: Option<String>,
     run_job: Option<StudioRunJob>,
     run_events: VecDeque<String>,
+    artifacts: StudioArtifacts,
     profile_name: String,
     profile_path: PathBuf,
     profile_names: Vec<String>,
@@ -149,6 +151,58 @@ struct StudioRunJob {
     started: Instant,
     cancel: Arc<AtomicBool>,
     kind: StudioJobKind,
+}
+
+#[derive(Debug, Clone)]
+struct StudioArtifacts {
+    dir: PathBuf,
+}
+
+impl StudioArtifacts {
+    fn new(cwd: &Path) -> Self {
+        let dir = std::env::var_os("AMON_HEN_RUN_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cwd.join(".amon-hen").join("runs").join(studio_run_id()));
+        Self { dir }
+    }
+
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self {
+            dir: PathBuf::new(),
+        }
+    }
+
+    fn append_line(&self, file_name: &str, line: &str) {
+        if self.dir.as_os_str().is_empty() {
+            return;
+        }
+        let _ = fs::create_dir_all(&self.dir);
+        let path = self.dir.join(file_name);
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+
+    fn append_json_line<T: Serialize>(&self, file_name: &str, value: &T) {
+        if let Ok(line) = serde_json::to_string(value) {
+            self.append_line(file_name, &line);
+        }
+    }
+
+    fn write_text(&self, file_name: &str, text: &str) {
+        if self.dir.as_os_str().is_empty() {
+            return;
+        }
+        let _ = fs::create_dir_all(&self.dir);
+        let _ = fs::write(self.dir.join(file_name), text);
+    }
+
+    fn write_json<T: Serialize>(&self, file_name: &str, value: &T) {
+        if let Ok(text) = serde_json::to_string_pretty(value) {
+            self.write_text(file_name, &(text + "\n"));
+        }
+    }
 }
 
 enum StudioJobMessage {
@@ -350,6 +404,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         return 0;
     }
 
+    let artifacts = StudioArtifacts::new(&resolved.cwd);
     let profile_path = studio_profile_path(&resolved.cwd);
     let profile_names = studio_profile_names(&profile_path).unwrap_or_default();
     let mut state = StudioState {
@@ -370,6 +425,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         last_capability_result: None,
         run_job: None,
         run_events: VecDeque::new(),
+        artifacts,
         profile_name: "default".to_string(),
         profile_path,
         profile_names,
@@ -386,6 +442,14 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         show_help: false,
         exit_armed_until: None,
     };
+    state.artifacts.write_text(
+        "status.txt",
+        &format!(
+            "status: Studio initialized\ncwd: {}\nversion: {}\n",
+            state.resolved.cwd.display(),
+            VERSION
+        ),
+    );
 
     configure_studio_color(&state.resolved.raw);
 
@@ -405,12 +469,20 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
             return 1;
         }
     };
+    let artifact_message = format!("[studio] artifacts: {}", state.artifacts.dir.display());
+    push_run_event(&mut state, artifact_message);
 
     loop {
         drain_studio_job(&mut state);
         if let Err(error) = draw(&mut terminal, &state) {
+            state.status = error.clone();
+            write_studio_error_artifact(&state, &error);
             drop(guard);
             eprintln!("{error}");
+            eprintln!(
+                "Amon Hen Studio artifacts: {}",
+                state.artifacts.dir.display()
+            );
             return 1;
         }
         let poll_timeout = if state.run_job.is_some() {
@@ -421,8 +493,14 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         let has_event = match event::poll(poll_timeout) {
             Ok(has_event) => has_event,
             Err(error) => {
+                state.status = format!("Failed to poll Studio input: {error}");
+                write_studio_error_artifact(&state, &state.status);
                 drop(guard);
                 eprintln!("Failed to poll Studio input: {error}");
+                eprintln!(
+                    "Amon Hen Studio artifacts: {}",
+                    state.artifacts.dir.display()
+                );
                 return 1;
             }
         };
@@ -432,8 +510,14 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         let event = match event::read() {
             Ok(event) => event,
             Err(error) => {
+                state.status = format!("Failed to read Studio input: {error}");
+                write_studio_error_artifact(&state, &state.status);
                 drop(guard);
                 eprintln!("Failed to read Studio input: {error}");
+                eprintln!(
+                    "Amon Hen Studio artifacts: {}",
+                    state.artifacts.dir.display()
+                );
                 return 1;
             }
         };
@@ -446,7 +530,16 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         };
         match action {
             StudioAction::None => {}
-            StudioAction::Quit => return 130,
+            StudioAction::Quit => {
+                mark_studio_exit(&mut state, 130);
+                drop(terminal);
+                drop(guard);
+                eprintln!(
+                    "Amon Hen Studio exited. Artifacts: {}",
+                    state.artifacts.dir.display()
+                );
+                return 130;
+            }
             StudioAction::RunAmonHen => {
                 start_studio_run(&mut state);
             }
@@ -512,17 +605,21 @@ fn start_studio_run(state: &mut StudioState) {
             .insert(member.clone(), "queued".to_string());
     }
 
+    let panic_tx = tx.clone();
     thread::spawn(move || {
-        if thread_cancel.load(Ordering::Relaxed) {
-            let _ = tx.send(StudioJobMessage::Cancelled(
-                "Amon Hen run cancelled before start".to_string(),
-            ));
-            return;
-        }
-        let mut thread_resolved = resolved;
-        thread_resolved.prompt = prompt;
-        let prompt_context =
-            match build_prompt_context_with_progress(&thread_resolved, Some(progress.clone())) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if thread_cancel.load(Ordering::Relaxed) {
+                let _ = tx.send(StudioJobMessage::Cancelled(
+                    "Amon Hen run cancelled before start".to_string(),
+                ));
+                return;
+            }
+            let mut thread_resolved = resolved;
+            thread_resolved.prompt = prompt;
+            let prompt_context = match build_prompt_context_with_progress(
+                &thread_resolved,
+                Some(progress.clone()),
+            ) {
                 Ok(context) => context,
                 Err(error) => {
                     let _ = tx.send(StudioJobMessage::Failed(format!(
@@ -531,26 +628,33 @@ fn start_studio_run(state: &mut StudioState) {
                     return;
                 }
             };
-        if thread_cancel.load(Ordering::Relaxed) {
-            let _ = tx.send(StudioJobMessage::Cancelled(
-                "Amon Hen run cancelled after prompt context".to_string(),
-            ));
-            return;
+            if thread_cancel.load(Ordering::Relaxed) {
+                let _ = tx.send(StudioJobMessage::Cancelled(
+                    "Amon Hen run cancelled after prompt context".to_string(),
+                ));
+                return;
+            }
+            let result = run_amon_hen_with_progress_and_cancel(
+                &thread_resolved,
+                prompt_context.prompt,
+                prompt_context.commands,
+                Some(progress),
+                Some(Arc::clone(&thread_cancel)),
+            );
+            if thread_cancel.load(Ordering::Relaxed) {
+                let _ = tx.send(StudioJobMessage::Cancelled(
+                    "Amon Hen run cancelled".to_string(),
+                ));
+                return;
+            }
+            let _ = tx.send(StudioJobMessage::Finished(Box::new(result)));
+        }));
+        if let Err(payload) = outcome {
+            let _ = panic_tx.send(StudioJobMessage::Failed(format!(
+                "Amon Hen run crashed: {}",
+                panic_payload(payload)
+            )));
         }
-        let result = run_amon_hen_with_progress_and_cancel(
-            &thread_resolved,
-            prompt_context.prompt,
-            prompt_context.commands,
-            Some(progress),
-            Some(Arc::clone(&thread_cancel)),
-        );
-        if thread_cancel.load(Ordering::Relaxed) {
-            let _ = tx.send(StudioJobMessage::Cancelled(
-                "Amon Hen run cancelled".to_string(),
-            ));
-            return;
-        }
-        let _ = tx.send(StudioJobMessage::Finished(Box::new(result)));
     });
 
     state.run_job = Some(StudioRunJob {
@@ -582,16 +686,26 @@ fn start_studio_action_job(state: &mut StudioState, kind: StudioJobKind) {
     };
     push_run_event(state, format!("[studio] {} queued", kind.label()));
 
+    let panic_tx = tx.clone();
     thread::spawn(move || {
-        let outcome = run_studio_action(kind, resolved, tx.clone(), Arc::clone(&thread_cancel));
-        if thread_cancel.load(Ordering::Relaxed) {
-            let _ = tx.send(StudioJobMessage::Cancelled(format!(
-                "{} cancelled",
-                kind.label()
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let outcome = run_studio_action(kind, resolved, tx.clone(), Arc::clone(&thread_cancel));
+            if thread_cancel.load(Ordering::Relaxed) {
+                let _ = tx.send(StudioJobMessage::Cancelled(format!(
+                    "{} cancelled",
+                    kind.label()
+                )));
+                return;
+            }
+            let _ = tx.send(StudioJobMessage::ExternalFinished(outcome));
+        }));
+        if let Err(payload) = outcome {
+            let _ = panic_tx.send(StudioJobMessage::Failed(format!(
+                "{} crashed: {}",
+                kind.label(),
+                panic_payload(payload)
             )));
-            return;
         }
-        let _ = tx.send(StudioJobMessage::ExternalFinished(outcome));
     });
 
     state.run_job = Some(StudioRunJob {
@@ -947,10 +1061,17 @@ fn drain_studio_job(state: &mut StudioState) {
         kind = Some(job.kind);
         cancel_requested = job.cancel.load(Ordering::Relaxed);
         while messages.len() < MAX_STUDIO_MESSAGES_PER_TICK {
-            let Ok(message) = job.rx.try_recv() else {
-                break;
-            };
-            messages.push(message);
+            match job.rx.try_recv() {
+                Ok(message) => messages.push(message),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    messages.push(StudioJobMessage::Failed(format!(
+                        "{} crashed or exited before sending a final result",
+                        job.kind.label()
+                    )));
+                    break;
+                }
+            }
         }
     }
 
@@ -961,6 +1082,7 @@ fn drain_studio_job(state: &mut StudioState) {
             StudioJobMessage::Log(line) => push_run_event(state, line),
             StudioJobMessage::Finished(result) => {
                 let result = *result;
+                write_result_artifacts(state, &result);
                 state.status = if is_success(&result) {
                     "Amon Hen run completed".to_string()
                 } else {
@@ -1001,10 +1123,14 @@ fn drain_studio_job(state: &mut StudioState) {
                         }
                         state.status = outcome.status;
                         state.focus = outcome.focus;
+                        state
+                            .artifacts
+                            .write_text("status.txt", &format!("status: {}\n", state.status));
                     }
                     Err(error) => {
                         state.status = error.clone();
                         push_run_event(state, format!("[studio] {error}"));
+                        write_studio_error_artifact(state, &error);
                     }
                 }
                 finished = true;
@@ -1012,11 +1138,13 @@ fn drain_studio_job(state: &mut StudioState) {
             StudioJobMessage::Cancelled(message) => {
                 state.status = message.clone();
                 push_run_event(state, format!("[studio] {message}"));
+                write_studio_error_artifact(state, &message);
                 finished = true;
             }
             StudioJobMessage::Failed(error) => {
                 state.status = error.clone();
                 push_run_event(state, format!("[studio] {error}"));
+                write_studio_error_artifact(state, &error);
                 finished = true;
             }
         }
@@ -1035,6 +1163,7 @@ fn drain_studio_job(state: &mut StudioState) {
 }
 
 fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
+    state.artifacts.append_json_line("events.ndjson", &event);
     let live_assistant = live_assistant_event(&event);
     if let Some(live) = &live_assistant {
         upsert_live_assistant_event(state, live);
@@ -1129,7 +1258,9 @@ fn upsert_live_assistant_event(state: &mut StudioState, event: &LiveAssistantEve
 
 fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
     let was_tail_locked = result_tail_locked(state);
-    state.run_events.push_back(studio_clip(&line.into(), 240));
+    let line = studio_clip(&line.into(), 240);
+    state.artifacts.append_line("studio.log", &line);
+    state.run_events.push_back(line);
     if state.run_events.len() > MAX_RUN_EVENTS {
         let overflow = state.run_events.len() - MAX_RUN_EVENTS;
         for _ in 0..overflow {
@@ -1152,6 +1283,121 @@ fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
     } else {
         clamp_result_scroll(state);
     }
+}
+
+fn studio_run_id() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{seconds}-{}", std::process::id())
+}
+
+fn panic_payload(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "panic with non-string payload".to_string()
+}
+
+fn write_studio_error_artifact(state: &StudioState, message: &str) {
+    let text = format!(
+        "status: {}\nerror: {}\nartifacts: {}\n",
+        state.status,
+        sanitize_status_detail(message),
+        state.artifacts.dir.display()
+    );
+    state.artifacts.write_text("last-error.txt", &text);
+    state.artifacts.write_text("status.txt", &text);
+}
+
+fn write_result_artifacts(state: &StudioState, result: &AmonHenResult) {
+    state.artifacts.write_json("result.json", result);
+    let diagnostic = result_diagnostic_summary(result);
+    state.artifacts.write_text("summary.txt", &diagnostic);
+    state.artifacts.write_text("status.txt", &diagnostic);
+    if !is_success(result) {
+        state.artifacts.write_text("last-error.txt", &diagnostic);
+    }
+}
+
+fn result_diagnostic_summary(result: &AmonHenResult) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "status: {}",
+        if is_success(result) {
+            "ok"
+        } else {
+            "needs-attention"
+        }
+    ));
+    lines.push(format!("cwd: {}", result.cwd));
+    lines.push(format!("iterations: {}", result.workflow.iterations));
+    lines.push(format!(
+        "summary: {} {}",
+        result.summary.name, result.summary.status
+    ));
+    if !result.summary.detail.trim().is_empty() {
+        lines.push(format!(
+            "summary_detail: {}",
+            sanitize_status_detail(&result.summary.detail)
+        ));
+    }
+    lines.push("members:".to_string());
+    for member in &result.members {
+        let detail = if member.detail.trim().is_empty() {
+            format!("exit={:?}", member.exit_code)
+        } else {
+            sanitize_status_detail(&member.detail)
+        };
+        lines.push(format!(
+            "- {} role={} status={} tokens={} tools={} detail={}",
+            member.name,
+            member.role,
+            member.status,
+            member.token_usage.total,
+            member.tool_calls.len(),
+            truncate(&detail, 500)
+        ));
+        for sub_agent in &member.sub_agents {
+            let sub_detail = if sub_agent.detail.trim().is_empty() {
+                format!("exit={:?}", sub_agent.exit_code)
+            } else {
+                sanitize_status_detail(&sub_agent.detail)
+            };
+            lines.push(format!(
+                "  - {} status={} tokens={} detail={}",
+                sub_agent.role,
+                sub_agent.status,
+                sub_agent.token_usage.total,
+                truncate(&sub_detail, 300)
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn mark_studio_exit(state: &mut StudioState, code: i32) {
+    if let Some(job) = &state.run_job {
+        job.cancel.store(true, Ordering::Relaxed);
+        let message = format!(
+            "Studio exited with code {code} while {} was active; cancellation was requested.",
+            job.kind.label()
+        );
+        state.status = message.clone();
+        write_studio_error_artifact(state, &message);
+        return;
+    }
+    let message = format!(
+        "status: {}\nexit_code: {code}\nartifacts: {}\n",
+        state.status,
+        state.artifacts.dir.display()
+    );
+    state.artifacts.write_text("status.txt", &message);
 }
 
 fn should_log_progress_event(state: &mut StudioState, event: &ProgressEvent) -> bool {
@@ -3929,6 +4175,56 @@ mod tests {
     }
 
     #[test]
+    fn progress_events_are_written_to_studio_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut state = test_state("hello");
+        state.artifacts = StudioArtifacts {
+            dir: temp.path().to_path_buf(),
+        };
+
+        apply_progress_event(
+            &mut state,
+            progress_event(
+                Some("claude"),
+                Some("lead"),
+                ProgressStage::Heartbeat,
+                Some("streaming"),
+                "[amon-hen] stream claude lead stdout: assistant live: found the issue",
+            ),
+        );
+        push_run_event(&mut state, "[studio] readable log line");
+
+        let events = fs::read_to_string(temp.path().join("events.ndjson")).unwrap();
+        let log = fs::read_to_string(temp.path().join("studio.log")).unwrap();
+        assert!(events.contains("\"provider\":\"claude\""));
+        assert!(log.contains("readable log line"));
+    }
+
+    #[test]
+    fn disconnected_studio_job_records_last_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut state = test_state("hello");
+        state.artifacts = StudioArtifacts {
+            dir: temp.path().to_path_buf(),
+        };
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        state.run_job = Some(StudioRunJob {
+            rx,
+            started: Instant::now(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            kind: StudioJobKind::AmonHen,
+        });
+
+        drain_studio_job(&mut state);
+
+        assert!(state.run_job.is_none());
+        assert!(state.status.contains("crashed or exited"));
+        let error = fs::read_to_string(temp.path().join("last-error.txt")).unwrap();
+        assert!(error.contains("crashed or exited"));
+    }
+
+    #[test]
     fn assistant_stream_snapshots_update_one_readable_log_line() {
         let mut state = test_state("hello");
         let first = progress_event_with_context(
@@ -4318,6 +4614,7 @@ mod tests {
             last_capability_result: None,
             run_job: None,
             run_events: VecDeque::new(),
+            artifacts: StudioArtifacts::disabled(),
             profile_name: "default".to_string(),
             profile_path: PathBuf::from(".amon-hen-studio-profiles.json"),
             profile_names: Vec::new(),

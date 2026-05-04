@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen --version 0.1.23 --force
+cargo install amon-hen --version 0.1.24 --force
 amon-hen --help
 ```
 
@@ -316,7 +316,12 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
   \"\$(cat \"$AMON_HEN_RUN_DIR/prompt.txt\")\""
 ```
 
-The terminal recording is written to `$AMON_HEN_RUN_DIR/studio.typescript`.
+The terminal recording is written to `$AMON_HEN_RUN_DIR/studio.typescript`. Studio also writes native diagnostics into the same directory, or `.amon-hen/runs/<run-id>/` inside the working repo when `AMON_HEN_RUN_DIR` is not set:
+
+- `studio.log` keeps the readable Studio run log outside the alternate screen.
+- `events.ndjson` keeps structured provider progress, token, tool, and status events.
+- `result.json` and `summary.txt` are written when a run reaches a final result.
+- `last-error.txt` is written when Studio detects a crash, cancellation, disconnected worker, failed prompt context, or failed external action.
 
 ## Development Checks
 
