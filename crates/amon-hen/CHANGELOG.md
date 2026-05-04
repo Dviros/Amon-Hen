@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.23
+
+- Added `--max-prompt-chars` and final provider prompt budgeting so long iterative runs cannot exceed Codex, Claude, or Gemini prompt-size limits.
+- Bounded planner, member, and sub-agent handoff reuse before later iterations to stop prompt context from multiplying across the swarm.
+- Rebudgeted same-provider team fanout and lead prompts before launch so sub-agent loops stay provider-safe even when earlier agents produce large outputs.
+
 ## 0.1.22
 
 - Stripped real and escaped terminal control sequences from provider stream output before Studio logs render them.

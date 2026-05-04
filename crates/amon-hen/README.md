@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen --version 0.1.22 --force
+cargo install amon-hen --version 0.1.23 --force
 amon-hen --help
 ```
 
@@ -89,6 +89,22 @@ Planner modes:
 - `--planner-mode blocking` waits for the planner output before executor prompts are built. This is the default and is best when you want a true planner handoff first.
 - `--planner-mode parallel` starts the planner/lead in the same iteration as the executors. This is best when Claude leads/plans but Codex and Gemini should not sit queued.
 - `--planner-mode review-chain` runs members serially in planner/lead order. Each provider reviews the previous provider's handoff and the current repo state before making deliberate deltas, which is the safer mode for production VPS work.
+
+Keep iterative runs under provider prompt limits:
+
+```bash
+amon-hen \
+  --members codex,claude \
+  --planner claude \
+  --planner-mode review-chain \
+  --lead claude \
+  --iterations 10 \
+  --max-member-chars 90000 \
+  --max-prompt-chars 240000 \
+  "Advance this repo safely and keep every handoff bounded"
+```
+
+`--max-member-chars` limits how much of each provider answer is reused in handoffs and synthesis. `--max-prompt-chars` is the final launch-time provider prompt ceiling, so later iterations and same-provider team handoffs cannot grow into provider "prompt too long" failures.
 
 Fan out real same-provider sub-agents:
 
@@ -293,6 +309,7 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
   --gemini-effort high \
   --timeout 7200 \
   --max-member-chars 140000 \
+  --max-prompt-chars 240000 \
   --cmd 'pwd && hostname && uptime' \
   --cmd 'git status -sb' \
   --cmd 'git log --oneline -5' \

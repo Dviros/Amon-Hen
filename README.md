@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen --version 0.1.22 --force
+cargo install amon-hen --version 0.1.23 --force
 ```
 
 From a checkout:
@@ -90,6 +90,22 @@ amon-hen \
 ```
 
 Use `--planner-mode blocking` when executor prompts should wait for a planner handoff first. Use `--planner-mode parallel` when the planner/lead should run alongside the executors in the same iteration. Use `--planner-mode review-chain` for production/race-sensitive work: members run one after another, and each agent reviews the previous agent handoff plus the current repo state before making deliberate changes.
+
+Keep long review loops under provider prompt limits:
+
+```bash
+amon-hen \
+  --members codex,claude \
+  --planner claude \
+  --planner-mode review-chain \
+  --lead claude \
+  --iterations 10 \
+  --max-member-chars 90000 \
+  --max-prompt-chars 240000 \
+  "Advance this repo safely and keep every handoff bounded"
+```
+
+`--max-member-chars` controls how much of each provider answer can be reused in later synthesis or handoff context. `--max-prompt-chars` is the final hard cap applied before launching each provider CLI, which protects long iterative Studio runs from provider "prompt too long" or OS argument-limit failures.
 
 Control model and effort per provider:
 
@@ -212,6 +228,7 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
   --gemini-sub-agents 3 \
   --timeout 7200 \
   --max-member-chars 140000 \
+  --max-prompt-chars 240000 \
   --cmd 'pwd && hostname && uptime' \
   --cmd 'git status -sb' \
   \"\$(cat \"$AMON_HEN_RUN_DIR/prompt.txt\")\""

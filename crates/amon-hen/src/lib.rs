@@ -20,6 +20,8 @@ mod studio;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_MAX_MEMBER_CHARS: usize = 12_000;
+const DEFAULT_MAX_PROMPT_CHARS: usize = 240_000;
+const PROVIDER_PROMPT_HARD_LIMIT_CHARS: usize = 1_000_000;
 const DEFAULT_ITERATIONS: usize = 1;
 const DEFAULT_TEAM_SIZE: usize = 0;
 const TOKEN_ESTIMATE_CHARS_PER_TOKEN: usize = 4;
@@ -330,6 +332,8 @@ pub struct CliArgs {
     timeout: u64,
     #[arg(long = "max-member-chars", default_value_t = DEFAULT_MAX_MEMBER_CHARS)]
     max_member_chars: usize,
+    #[arg(long = "max-prompt-chars", default_value_t = DEFAULT_MAX_PROMPT_CHARS)]
+    max_prompt_chars: usize,
     #[arg(long, default_value = ".")]
     cwd: PathBuf,
     #[arg(long, default_value = "auto")]
@@ -590,6 +594,8 @@ impl<'a> CommandRequest<'a> {
 #[derive(Clone)]
 struct EngineRunOptions {
     prompt: String,
+    max_prompt_chars: usize,
+    max_member_chars: usize,
     cwd: PathBuf,
     timeout_ms: u64,
     effort: Option<String>,
@@ -623,6 +629,8 @@ struct MemberPromptInput<'a> {
     workflow: &'a Workflow,
     iteration: usize,
     team_size: usize,
+    max_member_chars: usize,
+    max_prompt_chars: usize,
     previous_iteration: &'a [EngineResult],
     handoff_results: &'a [EngineResult],
     plan_output: &'a str,
@@ -949,6 +957,7 @@ Runtime:
   --cwd PATH                          Working directory for provider CLIs.
   --timeout SECONDS                   Per-provider timeout.
   --max-member-chars N                Max provider output included in synthesis.
+  --max-prompt-chars N                Hard cap for each provider prompt before launch.
   --color auto|always|never           Color mode.
   --no-color                          Disable color.
   -v, --version                       Print version.
@@ -1038,6 +1047,17 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
     }
     if raw.linear_max_polls == Some(0) {
         return Err("--linear-max-polls requires a positive integer.".to_string());
+    }
+    if raw.max_member_chars == 0 {
+        return Err("--max-member-chars requires a positive integer.".to_string());
+    }
+    if raw.max_prompt_chars < 16_384 {
+        return Err("--max-prompt-chars must be at least 16384.".to_string());
+    }
+    if raw.max_prompt_chars > PROVIDER_PROMPT_HARD_LIMIT_CHARS {
+        return Err(format!(
+            "--max-prompt-chars cannot exceed {PROVIDER_PROMPT_HARD_LIMIT_CHARS}; provider CLIs reject larger prompts."
+        ));
     }
     if raw
         .linear_endpoint
@@ -2358,12 +2378,8 @@ fn iteration_handoff_context(
         .iter()
         .filter(|result| result.status == "ok" && !result.output.trim().is_empty())
         .map(|result| {
-            format!(
-                "### {} ({})\n{}",
-                result.name,
-                result.role,
-                truncate(result.output.trim(), max_member_chars)
-            )
+            let output = bounded_context_text(result.output.trim(), max_member_chars, "handoff");
+            format!("### {} ({})\n{}", result.name, result.role, output)
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -2395,6 +2411,8 @@ fn run_iteration(
                 workflow,
                 iteration,
                 team_size,
+                max_member_chars: resolved.raw.max_member_chars,
+                max_prompt_chars: resolved.raw.max_prompt_chars,
                 previous_iteration,
                 handoff_results: &results,
                 plan_output: "",
@@ -2433,6 +2451,8 @@ fn run_iteration(
             workflow,
             iteration,
             team_size,
+            max_member_chars: resolved.raw.max_member_chars,
+            max_prompt_chars: resolved.raw.max_prompt_chars,
             previous_iteration,
             handoff_results: &[],
             plan_output: "",
@@ -2485,6 +2505,8 @@ fn run_iteration(
                 workflow: &workflow,
                 iteration,
                 team_size,
+                max_member_chars: resolved.raw.max_member_chars,
+                max_prompt_chars: resolved.raw.max_prompt_chars,
                 previous_iteration: previous_iteration.as_slice(),
                 handoff_results: &[],
                 plan_output: &plan_output,
@@ -2525,7 +2547,9 @@ fn planner_mode_runs_serial(workflow: &Workflow) -> bool {
 
 fn engine_options(resolved: &ResolvedArgs, input: EngineOptionsInput<'_>) -> EngineRunOptions {
     EngineRunOptions {
-        prompt: input.prompt,
+        prompt: limit_provider_prompt(&input.prompt, resolved.raw.max_prompt_chars),
+        max_prompt_chars: resolved.raw.max_prompt_chars,
+        max_member_chars: resolved.raw.max_member_chars,
         cwd: resolved.cwd.clone(),
         timeout_ms: resolved.raw.timeout * 1000,
         effort: provider_effort(resolved, input.member),
@@ -2700,20 +2724,21 @@ fn build_sub_agent_prompt(original: &str, role: &str, index: usize, total: usize
     )
 }
 
-fn build_team_lead_prompt(original: &str, sub_agents: &[EngineResult]) -> String {
+fn build_team_lead_prompt(
+    original: &str,
+    sub_agents: &[EngineResult],
+    max_member_chars: usize,
+) -> String {
     let handoff = sub_agents
         .iter()
         .map(|agent| {
-            format!(
-                "### {} [{}]\n{}",
-                agent.role,
-                agent.status,
-                if agent.output.trim().is_empty() {
-                    agent.detail.trim()
-                } else {
-                    agent.output.trim()
-                }
-            )
+            let raw = if agent.output.trim().is_empty() {
+                agent.detail.trim()
+            } else {
+                agent.output.trim()
+            };
+            let output = bounded_context_text(raw, max_member_chars, "sub-agent handoff");
+            format!("### {} [{}]\n{}", agent.role, agent.status, output)
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -2805,8 +2830,10 @@ fn run_engine_team(name: &str, options: EngineRunOptions) -> EngineResult {
         sub_options.team_size = 0;
         sub_options.is_sub_agent = true;
         sub_options.role = format!("{}:sub-agent-{index}", options.role);
-        sub_options.prompt =
-            build_sub_agent_prompt(&options.prompt, &options.role, index, team_size);
+        sub_options.prompt = limit_provider_prompt(
+            &build_sub_agent_prompt(&options.prompt, &options.role, index, team_size),
+            options.max_prompt_chars,
+        );
         thread::spawn(move || {
             let _ = tx.send((index, run_engine_single(&name, sub_options, vec![])));
         });
@@ -2820,7 +2847,10 @@ fn run_engine_team(name: &str, options: EngineRunOptions) -> EngineResult {
         .map(|(_, result)| result)
         .collect::<Vec<_>>();
     let mut lead_options = options.clone();
-    lead_options.prompt = build_team_lead_prompt(&options.prompt, &sub_agents);
+    lead_options.prompt = limit_provider_prompt(
+        &build_team_lead_prompt(&options.prompt, &sub_agents, options.max_member_chars),
+        options.max_prompt_chars,
+    );
     lead_options.is_sub_agent = true;
     run_engine_single(name, lead_options, sub_agents)
 }
@@ -4242,7 +4272,14 @@ fn build_member_prompt(input: MemberPromptInput<'_>) -> String {
         );
     }
     if !input.plan_output.trim().is_empty() {
-        sections.push(format!("Planner handoff:\n{}", input.plan_output.trim()));
+        sections.push(format!(
+            "Planner handoff:\n{}",
+            bounded_context_text(
+                input.plan_output.trim(),
+                input.max_member_chars,
+                "planner handoff"
+            )
+        ));
     }
     let context = input
         .previous_iteration
@@ -4250,12 +4287,9 @@ fn build_member_prompt(input: MemberPromptInput<'_>) -> String {
         .chain(input.handoff_results.iter())
         .filter(|result| result.status == "ok" && !result.output.trim().is_empty())
         .map(|result| {
-            format!(
-                "### {} ({})\n{}",
-                result.name,
-                result.role,
-                result.output.trim()
-            )
+            let output =
+                bounded_context_text(result.output.trim(), input.max_member_chars, "handoff");
+            format!("### {} ({})\n{}", result.name, result.role, output)
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -4263,7 +4297,7 @@ fn build_member_prompt(input: MemberPromptInput<'_>) -> String {
         sections.push(format!("Earlier Amon Hen handoffs:\n{context}"));
     }
     sections.push(format!("Current user query:\n{}", input.query.trim()));
-    sections.join("\n\n")
+    limit_provider_prompt(&sections.join("\n\n"), input.max_prompt_chars)
 }
 
 fn build_summary_prompt(
@@ -4608,6 +4642,50 @@ fn truncate(text: &str, max_chars: usize) -> String {
     }
 }
 
+fn bounded_context_text(text: &str, max_chars: usize, label: &str) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    if max_chars < 96 {
+        return truncate(text, max_chars);
+    }
+    let notice = format!(
+        "\n\n[amon-hen: {label} truncated from {total} chars to {max_chars} chars to stay under provider prompt limits.]\n\n"
+    );
+    let notice_len = notice.chars().count();
+    if notice_len >= max_chars {
+        return take_chars(text, max_chars);
+    }
+    let keep = max_chars - notice_len;
+    let head = keep.saturating_mul(2) / 3;
+    let tail = keep.saturating_sub(head);
+    format!(
+        "{}{}{}",
+        take_chars(text, head),
+        notice,
+        take_tail_chars(text, tail)
+    )
+}
+
+fn limit_provider_prompt(prompt: &str, max_chars: usize) -> String {
+    let max_chars = max_chars.min(PROVIDER_PROMPT_HARD_LIMIT_CHARS);
+    let total = prompt.chars().count();
+    if total <= max_chars {
+        return prompt.to_string();
+    }
+    bounded_context_text(prompt, max_chars, "provider prompt")
+}
+
+fn take_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+fn take_tail_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    text.chars().skip(total.saturating_sub(max_chars)).collect()
+}
+
 fn should_show_banner(raw: &CliArgs) -> bool {
     !raw.no_banner && !raw.headless && !raw.json && !raw.json_stream && !raw.plain
 }
@@ -4901,6 +4979,8 @@ mod tests {
             workflow: &workflow,
             iteration: 1,
             team_size: 0,
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
             previous_iteration: &[],
             handoff_results: &prior,
             plan_output: "",
@@ -5084,6 +5164,8 @@ mod tests {
             workflow: &workflow,
             iteration: 2,
             team_size: effective_team_size(&workflow, "codex"),
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
             previous_iteration: &previous,
             handoff_results: &handoff,
             plan_output: "plan output",
@@ -5140,6 +5222,8 @@ mod tests {
                     workflow: &workflow,
                     iteration: 2,
                     team_size: effective_team_size(&workflow, "claude"),
+                    max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
+                    max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
                     previous_iteration: &[],
                     handoff_results: &[],
                     plan_output: "",
@@ -5180,6 +5264,8 @@ mod tests {
                     workflow: &workflow,
                     iteration: 2,
                     team_size: effective_team_size(&workflow, "gemini"),
+                    max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
+                    max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
                     previous_iteration: &[],
                     handoff_results: &[],
                     plan_output: "",
@@ -5213,6 +5299,8 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let codex_options = EngineRunOptions {
             prompt: "codex prompt".to_string(),
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
             cwd: cwd.clone(),
             timeout_ms: 1,
             effort: Some("high".to_string()),
@@ -5272,6 +5360,8 @@ mod tests {
 
         let claude_options = EngineRunOptions {
             prompt: "claude prompt".to_string(),
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
             cwd: cwd.clone(),
             timeout_ms: 1,
             effort: Some("max".to_string()),
@@ -5336,6 +5426,8 @@ mod tests {
 
         let gemini_options = EngineRunOptions {
             prompt: "gemini prompt".to_string(),
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
             cwd,
             timeout_ms: 1,
             effort: Some("high".to_string()),
@@ -5417,6 +5509,8 @@ mod tests {
         let prompt = "x".repeat(300_000);
         let options = EngineRunOptions {
             prompt: prompt.clone(),
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
             cwd: std::env::current_dir().unwrap(),
             timeout_ms: 5_000,
             effort: None,
@@ -5487,6 +5581,8 @@ mod tests {
             workflow: &workflow,
             iteration: 1,
             team_size: 1,
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
             previous_iteration: &[],
             handoff_results: &[],
             plan_output: "",
@@ -5496,6 +5592,129 @@ mod tests {
         assert!(prompt.contains("Planner model: codex."));
         assert!(prompt.contains("Your assigned role: planner."));
         assert!(prompt.contains("Current user query:"));
+    }
+
+    #[test]
+    fn member_prompt_respects_prompt_budget_and_handoff_caps() {
+        let workflow = Workflow {
+            handoff: true,
+            lead: Some("claude".to_string()),
+            planner: Some("codex".to_string()),
+            planner_mode: PLANNER_MODE_REVIEW_CHAIN.to_string(),
+            iterations: 10,
+            team_work: 3,
+            teams: HashMap::new(),
+        };
+        let prior = vec![EngineResult {
+            name: "codex".to_string(),
+            bin: Some("codex".to_string()),
+            status: "ok".to_string(),
+            duration_ms: 1,
+            detail: String::new(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            output: "prior-output ".repeat(20_000),
+            command: "codex".to_string(),
+            token_usage: token_usage("prompt", "output"),
+            tool_calls: vec![],
+            sub_agents: vec![],
+            role: "planner".to_string(),
+            iteration: 3,
+            total_iterations: 10,
+            team_size: 3,
+        }];
+
+        let prompt = build_member_prompt(MemberPromptInput {
+            query: &"main-query ".repeat(20_000),
+            role: "lead",
+            workflow: &workflow,
+            iteration: 4,
+            team_size: 0,
+            max_member_chars: 2_000,
+            max_prompt_chars: 16_384,
+            previous_iteration: &prior,
+            handoff_results: &[],
+            plan_output: &"plan-output ".repeat(20_000),
+        });
+
+        assert!(prompt.chars().count() <= 16_384);
+        assert!(prompt.contains("planner handoff truncated"));
+        assert!(prompt.contains("handoff truncated"));
+        assert!(prompt.contains("provider prompt truncated"));
+    }
+
+    #[test]
+    fn team_prompts_are_rebudgeted_before_provider_launch() {
+        let options = EngineRunOptions {
+            prompt: "original ".repeat(30_000),
+            max_prompt_chars: 16_384,
+            max_member_chars: 1_000,
+            cwd: std::env::current_dir().unwrap(),
+            timeout_ms: 1_000,
+            effort: None,
+            model: None,
+            permission: None,
+            auth: DEFAULT_AUTH_MODE.to_string(),
+            capability: ProviderCapability {
+                mode: CAPABILITY_INHERIT.to_string(),
+                config: vec![],
+                mcp_profile: None,
+                mcp_config: vec![],
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+                tools: vec![],
+                agent: None,
+                agents_json: None,
+                plugin_dirs: vec![],
+                strict_mcp_config: false,
+                disable_slash_commands: false,
+                settings: None,
+                tools_profile: vec![],
+                allowed_mcp_servers: vec![],
+                policy: vec![],
+                admin_policy: vec![],
+            },
+            role: "planner".to_string(),
+            iteration: 1,
+            total_iterations: 1,
+            team_size: 2,
+            is_sub_agent: false,
+            live: false,
+            progress: None,
+            cancel: None,
+        };
+        let sub_prompt = limit_provider_prompt(
+            &build_sub_agent_prompt(&options.prompt, &options.role, 1, 2),
+            options.max_prompt_chars,
+        );
+        assert!(sub_prompt.chars().count() <= options.max_prompt_chars);
+
+        let sub_agent = EngineResult {
+            name: "codex".to_string(),
+            bin: Some("codex".to_string()),
+            status: "ok".to_string(),
+            duration_ms: 1,
+            detail: String::new(),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            output: "sub-agent-output ".repeat(20_000),
+            command: "codex".to_string(),
+            token_usage: token_usage("prompt", "output"),
+            tool_calls: vec![],
+            sub_agents: vec![],
+            role: "planner:sub-agent-1".to_string(),
+            iteration: 1,
+            total_iterations: 1,
+            team_size: 0,
+        };
+        let lead_prompt = limit_provider_prompt(
+            &build_team_lead_prompt(&options.prompt, &[sub_agent], options.max_member_chars),
+            options.max_prompt_chars,
+        );
+        assert!(lead_prompt.chars().count() <= options.max_prompt_chars);
+        assert!(lead_prompt.contains("sub-agent handoff truncated"));
     }
 
     #[test]
@@ -5672,7 +5891,7 @@ mod tests {
             total_iterations: 1,
             team_size: 0,
         };
-        let prompt = build_team_lead_prompt("ship it", &[agent]);
+        let prompt = build_team_lead_prompt("ship it", &[agent], DEFAULT_MAX_MEMBER_CHARS);
         assert!(prompt.contains("Sub-agent handoffs"));
         assert!(prompt.contains("inspect parser"));
         assert!(prompt.contains("Original provider prompt"));
@@ -5931,6 +6150,8 @@ mod tests {
             workflow: &workflow,
             iteration: 1,
             team_size: effective_team_size(&workflow, "codex"),
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
             previous_iteration: &[],
             handoff_results: &[],
             plan_output: "",
@@ -5941,6 +6162,8 @@ mod tests {
             workflow: &workflow,
             iteration: 1,
             team_size: effective_team_size(&workflow, "gemini"),
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
             previous_iteration: &[],
             handoff_results: &[],
             plan_output: "",
@@ -6155,6 +6378,8 @@ mod tests {
         let resolved = resolve_args(args).unwrap();
         let options = EngineRunOptions {
             prompt: "hello".to_string(),
+            max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
+            max_member_chars: DEFAULT_MAX_MEMBER_CHARS,
             cwd: resolved.cwd.clone(),
             timeout_ms: 1_000,
             effort: None,
