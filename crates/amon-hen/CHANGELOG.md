@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.26
+
+- Added startup update notices for interactive terminal runs, backed by crates.io version checks and cached to avoid slowing every command.
+- Added `--check-update`, `--update`, and `--no-update-check`; `--update` runs `cargo install amon-hen --force` by default and supports `AMON_HEN_UPDATE_COMMAND` for operator-controlled installs.
+- Added a Studio command-rail update action that checks the latest version, shows the changelog, runs the terminal update command, and records the result in Studio artifacts.
+
 ## 0.1.25
 
 - Suppressed incomplete provider stdout chunks so Studio no longer renders chopped Codex JSON, half command outputs, or arbitrary terminal fragments before a full provider event arrives.

@@ -1,5 +1,5 @@
 use clap::{error::ErrorKind, ArgAction, Parser, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -26,6 +26,13 @@ const DEFAULT_ITERATIONS: usize = 1;
 const DEFAULT_TEAM_SIZE: usize = 0;
 const TOKEN_ESTIMATE_CHARS_PER_TOKEN: usize = 4;
 const PROVIDER_STREAM_EVENT_MIN_INTERVAL: Duration = Duration::from_millis(250);
+const UPDATE_CRATE_NAME: &str = "amon-hen";
+const UPDATE_CHECK_URL: &str = "https://crates.io/api/v1/crates/amon-hen";
+const UPDATE_CHANGELOG_URL: &str =
+    "https://raw.githubusercontent.com/Dviros/Amon-Hen/main/crates/amon-hen/CHANGELOG.md";
+const UPDATE_CHECK_TIMEOUT_MS: u64 = 2_500;
+const UPDATE_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+const UPDATE_COMMAND_ENV: &str = "AMON_HEN_UPDATE_COMMAND";
 
 const ENGINES: [&str; 3] = ["codex", "claude", "gemini"];
 const DEFAULT_SUMMARIZER_ORDER: [&str; 3] = ["codex", "claude", "gemini"];
@@ -35,6 +42,15 @@ const CAPABILITY_OVERRIDE: &str = "override";
 const PLANNER_MODE_BLOCKING: &str = "blocking";
 const PLANNER_MODE_PARALLEL: &str = "parallel";
 const PLANNER_MODE_REVIEW_CHAIN: &str = "review-chain";
+const PLANNER_MODE_HANDSHAKE: &str = "handshake";
+const CONSENSUS_OFF: &str = "off";
+const CONSENSUS_REQUIRED: &str = "required";
+const FAILURE_POLICY_CONTINUE: &str = "continue";
+const FAILURE_POLICY_TAKEOVER: &str = "takeover";
+const STOP_WHEN_ITERATIONS: &str = "iterations";
+const STOP_WHEN_CONSENSUS: &str = "consensus";
+const OWNER_MAP_FLEXIBLE: &str = "flexible";
+const OWNER_MAP_STRICT: &str = "strict";
 const GEMINI_APPROVAL_MODES: [&str; 4] = ["plan", "default", "auto_edit", "yolo"];
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -90,6 +106,12 @@ impl Engine {
 pub struct CliArgs {
     #[arg(short = 'v', long = "version", action = ArgAction::SetTrue)]
     version: bool,
+    #[arg(long = "check-update", action = ArgAction::SetTrue)]
+    check_update: bool,
+    #[arg(long = "update", action = ArgAction::SetTrue)]
+    update: bool,
+    #[arg(long = "no-update-check", action = ArgAction::SetTrue)]
+    no_update_check: bool,
 
     #[arg(long, action = ArgAction::SetTrue)]
     json: bool,
@@ -248,12 +270,41 @@ pub struct CliArgs {
     iterations: usize,
     #[arg(long = "team-work", alias = "teamwork", alias = "sub-agents", default_value_t = DEFAULT_TEAM_SIZE)]
     team_work: usize,
+    #[arg(long = "handshake", action = ArgAction::SetTrue)]
+    handshake: bool,
+    #[arg(long = "handshake-provider")]
+    handshake_provider: Option<String>,
+    #[arg(long = "handshake-agent", alias = "handshake-agents", value_delimiter = ',', action = ArgAction::Append)]
+    handshake_agents: Vec<String>,
+    #[arg(long = "handshake-sub-agents", default_value = "auto")]
+    handshake_sub_agents: String,
     #[arg(long = "codex-sub-agents")]
     codex_sub_agents: Option<usize>,
     #[arg(long = "claude-sub-agents")]
     claude_sub_agents: Option<usize>,
     #[arg(long = "gemini-sub-agents")]
     gemini_sub_agents: Option<usize>,
+
+    #[arg(long = "consensus", default_value = CONSENSUS_OFF)]
+    consensus: String,
+    #[arg(long = "consensus-reviewers", value_delimiter = ',')]
+    consensus_reviewers: Vec<String>,
+    #[arg(long = "failure-policy", default_value = FAILURE_POLICY_CONTINUE)]
+    failure_policy: String,
+    #[arg(long = "review-rounds", default_value_t = 1)]
+    review_rounds: usize,
+    #[arg(long = "require-final-diff-review", action = ArgAction::SetTrue)]
+    require_final_diff_review: bool,
+    #[arg(long = "require-tests", action = ArgAction::SetTrue)]
+    require_tests: bool,
+    #[arg(long = "require-secret-scan", action = ArgAction::SetTrue)]
+    require_secret_scan: bool,
+    #[arg(long = "require-clean-git-diff", action = ArgAction::SetTrue)]
+    require_clean_git_diff: bool,
+    #[arg(long = "stop-when", default_value = STOP_WHEN_ITERATIONS)]
+    stop_when: String,
+    #[arg(long = "owner-map", default_value = OWNER_MAP_FLEXIBLE)]
+    owner_map: String,
 
     #[arg(long = "deliver-linear", alias = "linear", action = ArgAction::SetTrue)]
     deliver_linear: bool,
@@ -336,6 +387,8 @@ pub struct CliArgs {
     max_prompt_chars: usize,
     #[arg(long, default_value = ".")]
     cwd: PathBuf,
+    #[arg(long = "resume", value_name = "RUN_DIR")]
+    resume: Option<PathBuf>,
     #[arg(long, default_value = "auto")]
     color: String,
     #[arg(long = "no-color", action = ArgAction::SetTrue)]
@@ -370,7 +423,7 @@ struct ResolvedArgs {
     cwd: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmonHenResult {
     query: String,
     cwd: String,
@@ -381,20 +434,39 @@ pub struct AmonHenResult {
     iterations: Vec<IterationRecord>,
     members: Vec<EngineResult>,
     summary: EngineResult,
+    consensus: Option<ConsensusResult>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Workflow {
     handoff: bool,
     lead: Option<String>,
     planner: Option<String>,
     planner_mode: String,
+    owner_map: String,
+    handshake: bool,
+    handshake_agents: Vec<AgentSlot>,
     iterations: usize,
     team_work: usize,
     teams: HashMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentSlot {
+    id: String,
+    provider: String,
+    role: String,
+    team_size: usize,
+}
+
+#[derive(Debug, Clone)]
+struct HandshakeAgentSpec {
+    role: String,
+    provider: String,
+    sub_agents: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct IterationRecord {
     iteration: usize,
     total_iterations: usize,
@@ -404,11 +476,12 @@ struct IterationRecord {
     sub_agents: Vec<EngineResult>,
     handoff_context: Option<String>,
     summary_context: Option<String>,
+    consensus: Option<ConsensusResult>,
     token_usage: TokenUsage,
     tool_calls: Vec<ToolUsage>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineResult {
     name: String,
     bin: Option<String>,
@@ -429,7 +502,7 @@ pub struct EngineResult {
     team_size: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct TokenUsage {
     input: usize,
     output: usize,
@@ -438,7 +511,7 @@ struct TokenUsage {
     source: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ToolUsage {
     name: String,
     kind: String,
@@ -446,7 +519,7 @@ struct ToolUsage {
     detail: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CommandTelemetry {
     command: String,
     status: String,
@@ -456,6 +529,61 @@ struct CommandTelemetry {
     stdout_chars: usize,
     stderr_chars: usize,
     timed_out: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConsensusConfig {
+    mode: String,
+    reviewers: Vec<String>,
+    failure_policy: String,
+    review_rounds: usize,
+    require_final_diff_review: bool,
+    require_tests: bool,
+    require_secret_scan: bool,
+    require_clean_git_diff: bool,
+    stop_when: String,
+    owner_map: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConsensusResult {
+    status: String,
+    iteration: usize,
+    approved: bool,
+    config: ConsensusConfig,
+    rounds: Vec<ConsensusRound>,
+    blockers: Vec<String>,
+    takeover_required: bool,
+    takeover_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConsensusRound {
+    round: usize,
+    status: String,
+    checks: Vec<ConsensusCheck>,
+    reviews: Vec<ConsensusReview>,
+    blockers: Vec<String>,
+    takeover_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConsensusCheck {
+    name: String,
+    command: CommandTelemetry,
+    stdout: String,
+    stderr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConsensusReview {
+    provider: String,
+    role: String,
+    status: String,
+    approved: bool,
+    blockers: Vec<String>,
+    takeover_for: Vec<String>,
+    result: EngineResult,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize)]
@@ -675,6 +803,32 @@ struct ProviderCapabilityStatus {
     detail: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpdateInfo {
+    current_version: String,
+    latest_version: String,
+    update_available: bool,
+    changelog: String,
+    source: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CratesIoResponse {
+    #[serde(rename = "crate")]
+    krate: CratesIoCrate,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CratesIoCrate {
+    newest_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpdateCache {
+    checked_at_unix_secs: u64,
+    info: UpdateInfo,
+}
+
 struct TempSettings {
     _dir: tempfile::TempDir,
     path: PathBuf,
@@ -720,17 +874,40 @@ where
         return 0;
     }
 
-    let resolved = match resolve_args(parsed) {
+    if parsed.check_update {
+        return match check_for_update(&parsed.cwd, false) {
+            Ok(info) => {
+                println!("{}", render_update_check(&info));
+                0
+            }
+            Err(error) => {
+                eprintln!("Update check failed: {error}");
+                1
+            }
+        };
+    }
+
+    if parsed.update {
+        return run_self_update(&parsed.cwd);
+    }
+
+    let mut resolved = match resolve_args(parsed) {
         Ok(resolved) => resolved,
         Err(error) => {
             eprintln!("{error}");
             return 64;
         }
     };
+    if let Err(error) = apply_resume_prompt(&mut resolved) {
+        eprintln!("{error}");
+        return 64;
+    }
 
     if resolved.raw.studio {
         return studio::run_studio(&resolved);
     }
+
+    maybe_print_startup_update_notice(&resolved.raw, &resolved.cwd);
 
     let event_bus = resolved.raw.json_stream.then(RuntimeEventBus::new);
     if let Some(bus) = &event_bus {
@@ -859,6 +1036,305 @@ where
     }
 }
 
+fn maybe_print_startup_update_notice(raw: &CliArgs, cwd: &Path) {
+    if !should_auto_check_updates(raw) {
+        return;
+    }
+    let Ok(info) = check_for_update(cwd, true) else {
+        return;
+    };
+    if info.update_available {
+        eprintln!("{}", render_startup_update_notice(&info));
+    }
+}
+
+fn should_auto_check_updates(raw: &CliArgs) -> bool {
+    !raw.no_update_check
+        && !raw.check_update
+        && !raw.update
+        && !raw.json
+        && !raw.json_stream
+        && !raw.plain
+        && !raw.headless
+        && !raw.summary_only
+        && io::stderr().is_terminal()
+}
+
+fn check_for_update(cwd: &Path, use_cache: bool) -> Result<UpdateInfo, String> {
+    if use_cache {
+        if let Some(info) = read_cached_update_info(cwd) {
+            return Ok(info);
+        }
+    }
+
+    let info = fetch_update_info()?;
+    write_update_cache(cwd, &info);
+    Ok(info)
+}
+
+fn fetch_update_info() -> Result<UpdateInfo, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(UPDATE_CHECK_TIMEOUT_MS))
+        .user_agent(format!("{UPDATE_CRATE_NAME}/{VERSION}"))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response: CratesIoResponse = client
+        .get(UPDATE_CHECK_URL)
+        .send()
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .map_err(|error| error.to_string())?;
+    let latest_version = response.krate.newest_version;
+    let update_available = version_cmp(&latest_version, VERSION) == std::cmp::Ordering::Greater;
+    let changelog = if update_available {
+        fetch_remote_changelog(&client)
+            .ok()
+            .and_then(|text| extract_changelog_range(&text, VERSION, &latest_version))
+            .unwrap_or_else(|| "Changelog unavailable; run --check-update again or open the crates.io release page.".to_string())
+    } else {
+        String::new()
+    };
+    Ok(UpdateInfo {
+        current_version: VERSION.to_string(),
+        latest_version,
+        update_available,
+        changelog,
+        source: UPDATE_CHECK_URL.to_string(),
+    })
+}
+
+fn fetch_remote_changelog(client: &reqwest::blocking::Client) -> Result<String, String> {
+    client
+        .get(UPDATE_CHANGELOG_URL)
+        .send()
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .text()
+        .map_err(|error| error.to_string())
+}
+
+fn read_cached_update_info(cwd: &Path) -> Option<UpdateInfo> {
+    let path = update_cache_path(cwd)?;
+    let text = fs::read_to_string(path).ok()?;
+    let cache: UpdateCache = serde_json::from_str(&text).ok()?;
+    if cache.info.current_version != VERSION {
+        return None;
+    }
+    let age = unix_now_secs().saturating_sub(cache.checked_at_unix_secs);
+    (age <= UPDATE_CACHE_TTL_SECS).then_some(cache.info)
+}
+
+fn write_update_cache(cwd: &Path, info: &UpdateInfo) {
+    let Some(path) = update_cache_path(cwd) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let cache = UpdateCache {
+        checked_at_unix_secs: unix_now_secs(),
+        info: info.clone(),
+    };
+    if let Ok(text) = serde_json::to_string_pretty(&cache) {
+        let _ = fs::write(path, text + "\n");
+    }
+}
+
+fn update_cache_path(cwd: &Path) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("AMON_HEN_UPDATE_CACHE").map(PathBuf::from) {
+        return Some(if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        });
+    }
+    if let Some(root) = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from) {
+        return Some(root.join("amon-hen").join("update-check.json"));
+    }
+    std::env::var_os("HOME").map(PathBuf::from).map(|home| {
+        home.join(".cache")
+            .join("amon-hen")
+            .join("update-check.json")
+    })
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn render_startup_update_notice(info: &UpdateInfo) -> String {
+    let mut lines = vec![
+        format!(
+            "Amon Hen update available: {} -> {}",
+            info.current_version, info.latest_version
+        ),
+        "Run `amon-hen --update` to update from this terminal.".to_string(),
+    ];
+    let changelog = render_changelog_excerpt(&info.changelog, 10);
+    if !changelog.is_empty() {
+        lines.push("Changelog:".to_string());
+        lines.push(indent(&changelog, "  "));
+    }
+    lines.join("\n")
+}
+
+fn render_update_check(info: &UpdateInfo) -> String {
+    if !info.update_available {
+        return format!(
+            "Amon Hen is up to date: {} (checked {})",
+            info.current_version, info.source
+        );
+    }
+    let mut lines = vec![
+        format!(
+            "Amon Hen update available: {} -> {}",
+            info.current_version, info.latest_version
+        ),
+        "Update command: amon-hen --update".to_string(),
+    ];
+    let changelog = render_changelog_excerpt(&info.changelog, 40);
+    if !changelog.is_empty() {
+        lines.push(String::new());
+        lines.push("Changelog:".to_string());
+        lines.push(changelog);
+    }
+    lines.join("\n")
+}
+
+fn render_changelog_excerpt(changelog: &str, max_lines: usize) -> String {
+    let mut lines = changelog
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .take(max_lines)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if changelog
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+        > max_lines
+    {
+        lines.push("...".to_string());
+    }
+    lines.join("\n")
+}
+
+fn extract_changelog_range(changelog: &str, current: &str, latest: &str) -> Option<String> {
+    let mut selected = Vec::new();
+    let mut include = false;
+    for line in changelog.lines() {
+        if let Some(version) = parse_changelog_heading(line) {
+            include = version_cmp(&version, current) == std::cmp::Ordering::Greater
+                && version_cmp(&version, latest) != std::cmp::Ordering::Greater;
+        }
+        if include {
+            selected.push(line.to_string());
+        }
+    }
+    let text = selected.join("\n").trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn parse_changelog_heading(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("## ")?;
+    let first = rest
+        .trim()
+        .trim_matches(['[', ']'])
+        .split_whitespace()
+        .next()?
+        .trim_start_matches('v')
+        .trim_matches(['[', ']']);
+    (!first.is_empty()).then(|| first.to_string())
+}
+
+fn version_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let left_parts = version_numeric_parts(left);
+    let right_parts = version_numeric_parts(right);
+    let len = left_parts.len().max(right_parts.len()).max(3);
+    for index in 0..len {
+        let left = left_parts.get(index).copied().unwrap_or(0);
+        let right = right_parts.get(index).copied().unwrap_or(0);
+        match left.cmp(&right) {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn version_numeric_parts(version: &str) -> Vec<u64> {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect()
+}
+
+fn run_self_update(cwd: &Path) -> i32 {
+    match check_for_update(cwd, false) {
+        Ok(info) => eprintln!("{}", render_update_check(&info)),
+        Err(error) => eprintln!("Update check failed before install: {error}"),
+    }
+    let (_, _, display) = self_update_command();
+    eprintln!("Running update command: {display}");
+    let result = run_self_update_command(cwd, None);
+    print_command_result(&result);
+    if command_telemetry(&result).status == "ok" {
+        eprintln!("Amon Hen updated. Restart the terminal command to use the new binary.");
+        0
+    } else {
+        eprintln!("Amon Hen update failed.");
+        1
+    }
+}
+
+fn run_self_update_command(cwd: &Path, cancel: Option<Arc<AtomicBool>>) -> CommandResult {
+    let (command, args, _) = self_update_command();
+    run_command(CommandRequest::new(&command, &args, cwd, 10 * 60 * 1000).cancel(cancel))
+}
+
+fn self_update_command() -> (String, Vec<String>, String) {
+    if let Ok(command) = std::env::var(UPDATE_COMMAND_ENV) {
+        let shell = if cfg!(windows) { "cmd" } else { "sh" }.to_string();
+        let args = if cfg!(windows) {
+            vec!["/C".to_string(), command.clone()]
+        } else {
+            vec!["-lc".to_string(), command.clone()]
+        };
+        return (shell, args, command);
+    }
+    (
+        "cargo".to_string(),
+        vec![
+            "install".to_string(),
+            UPDATE_CRATE_NAME.to_string(),
+            "--force".to_string(),
+        ],
+        format!("cargo install {UPDATE_CRATE_NAME} --force"),
+    )
+}
+
+fn print_command_result(result: &CommandResult) {
+    if !result.stdout.trim().is_empty() {
+        eprintln!("{}", result.stdout.trim_end());
+    }
+    if !result.stderr.trim().is_empty() {
+        eprintln!("{}", result.stderr.trim_end());
+    }
+    if let Some(error) = &result.error {
+        eprintln!("{error}");
+    }
+}
+
 fn parse_error_exit_code(kind: ErrorKind) -> i32 {
     match kind {
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
@@ -925,14 +1401,30 @@ Auth and provider capabilities:
 Team workflow:
   --handoff                           Feed planner/lead context between providers.
   --planner codex|claude|gemini       Assign the planning role.
-  --planner-mode blocking|parallel|review-chain
-                                      Wait, run beside executors, or serially review each agent.
+  --planner-mode blocking|parallel|review-chain|handshake
+                                      Wait, run beside executors, serially review, or run a role handshake.
   --lead codex|claude|gemini          Assign the lead reviewer/synthesizer role.
   --iterations N                      Run multiple provider rounds per prompt.
   --team-work N                       Spawn N same-provider sub-agents per provider.
+  --handshake                         Run a planner -> executor -> reviewer agent handshake.
+  --handshake-provider codex|claude|gemini
+                                      Non-declarative single-provider handshake model.
+  --handshake-agent ROLE=PROVIDER[:SUBS]
+                                      Declarative role slot, repeatable or comma-list. Roles: planner, executor, reviewer.
+  --handshake-sub-agents N|auto       Sub-agent count for generated handshake slots.
   --codex-sub-agents N                Override Codex sub-agent count.
   --claude-sub-agents N               Override Claude sub-agent count.
   --gemini-sub-agents N               Override Gemini sub-agent count.
+  --consensus off|required            Require reviewer consensus before success.
+  --consensus-reviewers LIST          Providers that must approve consensus.
+  --failure-policy continue|takeover  Continue after failures or require reviewer takeover.
+  --review-rounds N                   Consensus review rounds before blocking.
+  --require-final-diff-review         Review final git diff as part of consensus.
+  --require-tests                     Run detected test suite as consensus evidence.
+  --require-secret-scan               Block on sensitive strings/local paths in repo.
+  --require-clean-git-diff            Run git diff hygiene checks.
+  --stop-when iterations|consensus    Stop after configured iterations or first consensus.
+  --owner-map flexible|strict         Require explicit ownership review.
   --file PATH                         Tag a local file into the prompt context, repeatable.
   --cmd COMMAND                       Run a local command and include its telemetry, repeatable.
 
@@ -955,11 +1447,15 @@ Linear delivery:
 
 Runtime:
   --cwd PATH                          Working directory for provider CLIs.
+  --resume RUN_DIR                    Reopen a Studio run from its saved state directory.
   --timeout SECONDS                   Per-provider timeout.
   --max-member-chars N                Max provider output included in synthesis.
   --max-prompt-chars N                Hard cap for each provider prompt before launch.
   --color auto|always|never           Color mode.
   --no-color                          Disable color.
+  --check-update                      Check crates.io for a newer Amon Hen and print the changelog.
+  --update                            Run the terminal self-update command.
+  --no-update-check                   Disable the startup update notice.
   -v, --version                       Print version.
   -h, --help                          Show this help.
 
@@ -975,7 +1471,7 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
     validate_engine_name(&raw.summarizer, true, "--summarizer")?;
     if let Some(lead) = &raw.lead {
         validate_engine_name(lead, false, "--lead")?;
-        if !members.contains(lead) {
+        if !handshake_requested(&raw) && !members.contains(lead) {
             return Err(format!(
                 "--lead must be one of the enabled members: {}",
                 members.join(", ")
@@ -984,7 +1480,7 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
     }
     if let Some(planner) = &raw.planner {
         validate_engine_name(planner, false, "--planner")?;
-        if !members.contains(planner) {
+        if !handshake_requested(&raw) && !members.contains(planner) {
             return Err(format!(
                 "--planner must be one of the enabled members: {}",
                 members.join(", ")
@@ -998,8 +1494,47 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
             PLANNER_MODE_BLOCKING,
             PLANNER_MODE_PARALLEL,
             PLANNER_MODE_REVIEW_CHAIN,
+            PLANNER_MODE_HANDSHAKE,
         ],
     )?;
+    if let Some(provider) = &raw.handshake_provider {
+        validate_engine_name(provider, false, "--handshake-provider")?;
+    }
+    validate_handshake_sub_agents(&raw.handshake_sub_agents)?;
+    for agent in &raw.handshake_agents {
+        parse_handshake_agent_spec(agent)?;
+    }
+    validate_choice(
+        "--consensus",
+        &raw.consensus,
+        &[CONSENSUS_OFF, CONSENSUS_REQUIRED],
+    )?;
+    validate_choice(
+        "--failure-policy",
+        &raw.failure_policy,
+        &[FAILURE_POLICY_CONTINUE, FAILURE_POLICY_TAKEOVER],
+    )?;
+    validate_choice(
+        "--stop-when",
+        &raw.stop_when,
+        &[STOP_WHEN_ITERATIONS, STOP_WHEN_CONSENSUS],
+    )?;
+    validate_choice(
+        "--owner-map",
+        &raw.owner_map,
+        &[OWNER_MAP_FLEXIBLE, OWNER_MAP_STRICT],
+    )?;
+    if raw.review_rounds == 0 {
+        return Err("--review-rounds requires a positive integer.".to_string());
+    }
+    for reviewer in raw
+        .consensus_reviewers
+        .iter()
+        .map(|reviewer| reviewer.trim())
+        .filter(|reviewer| !reviewer.is_empty())
+    {
+        validate_engine_name(reviewer, false, "--consensus-reviewers")?;
+    }
     validate_provider_effort("codex", raw.codex_effort.as_deref())?;
     validate_provider_effort("claude", raw.claude_effort.as_deref())?;
     validate_provider_effort("gemini", raw.gemini_effort.as_deref())?;
@@ -1097,8 +1632,65 @@ fn resolve_args(raw: CliArgs) -> Result<ResolvedArgs, String> {
     })
 }
 
+fn apply_resume_prompt(resolved: &mut ResolvedArgs) -> Result<(), String> {
+    let Some(resume) = &resolved.raw.resume else {
+        return Ok(());
+    };
+    let run_dir = resolve_resume_dir(&resolved.cwd, resume);
+    if !run_dir.exists() {
+        return Err(format!(
+            "--resume run directory was not found: {}",
+            run_dir.display()
+        ));
+    }
+    if !resolved.prompt.trim().is_empty() {
+        return Ok(());
+    }
+    if let Some(prompt) = read_resume_prompt(&run_dir)? {
+        resolved.prompt = prompt;
+        return Ok(());
+    }
+    Err(format!(
+        "--resume could not find a saved prompt in {}",
+        run_dir.display()
+    ))
+}
+
+fn read_resume_prompt(run_dir: &Path) -> Result<Option<String>, String> {
+    let state_path = run_dir.join("state.json");
+    if state_path.exists() {
+        let text = fs::read_to_string(&state_path)
+            .map_err(|error| format!("Failed to read {}: {error}", state_path.display()))?;
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|error| format!("Failed to parse {}: {error}", state_path.display()))?;
+        if let Some(prompt) = value.get("prompt").and_then(Value::as_str) {
+            return Ok(Some(prompt.to_string()));
+        }
+    }
+
+    let prompt_path = run_dir.join("prompt.txt");
+    if prompt_path.exists() {
+        return fs::read_to_string(&prompt_path)
+            .map(Some)
+            .map_err(|error| format!("Failed to read {}: {error}", prompt_path.display()));
+    }
+    Ok(None)
+}
+
+fn resolve_resume_dir(cwd: &Path, resume: &Path) -> PathBuf {
+    if resume.is_absolute() {
+        resume.to_path_buf()
+    } else {
+        cwd.join(resume)
+    }
+}
+
 fn resolve_members(raw: &CliArgs) -> Result<Vec<String>, String> {
-    let mut members = if raw.members.is_empty() {
+    let explicit_members =
+        !raw.members.is_empty() || raw.all || raw.codex || raw.claude || raw.gemini;
+    let mut members = if handshake_requested(raw) && !explicit_members {
+        default_handshake_members(raw)?
+    } else if raw.members.is_empty() {
         ENGINES
             .iter()
             .map(|name| (*name).to_string())
@@ -1144,6 +1736,35 @@ fn resolve_members(raw: &CliArgs) -> Result<Vec<String>, String> {
     Ok(members)
 }
 
+fn handshake_requested(raw: &CliArgs) -> bool {
+    raw.handshake || raw.planner_mode == PLANNER_MODE_HANDSHAKE || !raw.handshake_agents.is_empty()
+}
+
+fn default_handshake_members(raw: &CliArgs) -> Result<Vec<String>, String> {
+    let mut members = Vec::new();
+    for spec in raw
+        .handshake_agents
+        .iter()
+        .map(|value| parse_handshake_agent_spec(value))
+    {
+        let spec = spec?;
+        if !members.iter().any(|member| member == &spec.provider) {
+            members.push(spec.provider);
+        }
+    }
+    if members.is_empty() {
+        let provider = raw
+            .handshake_provider
+            .as_deref()
+            .or(raw.planner.as_deref())
+            .or(raw.lead.as_deref())
+            .unwrap_or("codex");
+        validate_engine_name(provider, false, "--handshake-provider")?;
+        members.push(provider.to_string());
+    }
+    Ok(members)
+}
+
 fn validate_engine_name(name: &str, allow_auto: bool, flag: &str) -> Result<(), String> {
     if allow_auto && name == "auto" {
         return Ok(());
@@ -1179,6 +1800,69 @@ fn validate_choice(flag: &str, value: &str, allowed: &[&str]) -> Result<(), Stri
         Ok(())
     } else {
         Err(format!("{flag} must be one of: {}", allowed.join(", ")))
+    }
+}
+
+fn validate_handshake_sub_agents(value: &str) -> Result<(), String> {
+    handshake_sub_agent_override(value).map(|_| ())
+}
+
+fn handshake_sub_agent_override(value: &str) -> Result<Option<usize>, String> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("auto") || value.is_empty() {
+        return Ok(None);
+    }
+    value
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|_| "--handshake-sub-agents must be `auto` or a non-negative integer.".to_string())
+}
+
+fn parse_handshake_agent_spec(spec: &str) -> Result<HandshakeAgentSpec, String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err("--handshake-agent cannot be empty.".to_string());
+    }
+    let (role, rest) = spec
+        .split_once('=')
+        .or_else(|| spec.split_once(':'))
+        .ok_or_else(|| {
+            "--handshake-agent must look like ROLE=PROVIDER[:SUB_AGENTS].".to_string()
+        })?;
+    let role = normalize_handshake_role(role)?;
+    let mut parts = rest.split(':');
+    let provider = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "--handshake-agent provider cannot be empty.".to_string())?;
+    validate_engine_name(provider, false, "--handshake-agent")?;
+    let sub_agents = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<usize>().map_err(|_| {
+                "--handshake-agent sub-agent count must be a non-negative integer.".to_string()
+            })
+        })
+        .transpose()?;
+    if parts.next().is_some() {
+        return Err("--handshake-agent must look like ROLE=PROVIDER[:SUB_AGENTS].".to_string());
+    }
+    Ok(HandshakeAgentSpec {
+        role,
+        provider: provider.to_string(),
+        sub_agents,
+    })
+}
+
+fn normalize_handshake_role(role: &str) -> Result<String, String> {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "planner" | "plan" => Ok("planner".to_string()),
+        "executor" | "execute" | "exec" | "builder" | "implementer" => Ok("executor".to_string()),
+        "reviewer" | "review" | "verifier" | "critic" => Ok("reviewer".to_string()),
+        _ => Err("--handshake-agent role must be one of: planner, executor, reviewer.".to_string()),
     }
 }
 
@@ -1331,6 +2015,20 @@ fn normalize_escaped_log_text(value: &str) -> String {
 }
 
 fn strip_terminal_control_sequences(value: &str) -> String {
+    let needs_cleaning = value.as_bytes().contains(&0x1b)
+        || value.contains('\u{9b}')
+        || value.contains('\\')
+        || value.contains("u001b")
+        || value.contains("u001B")
+        || value.contains("u{1b}")
+        || value.contains("u{1B}")
+        || value
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'));
+    if !needs_cleaning {
+        return value.to_string();
+    }
+
     let chars = value.chars().collect::<Vec<_>>();
     let mut output = String::with_capacity(value.len());
     let mut index = 0;
@@ -2222,6 +2920,7 @@ fn run_amon_hen_with_progress_and_cancel(
     let mut previous_iteration = Vec::new();
     let mut final_members = Vec::new();
     let mut iterations = Vec::new();
+    let mut final_consensus = None;
 
     for iteration in 1..=workflow.iterations {
         let iteration_started = Instant::now();
@@ -2256,14 +2955,36 @@ fn run_amon_hen_with_progress_and_cancel(
             progress.clone(),
             cancel.clone(),
         );
-        iterations.push(iteration_record(
+        let mut record = iteration_record(
             iteration,
             workflow.iterations,
             final_members.clone(),
             iteration_started.elapsed().as_millis(),
             handoff_context,
             None,
-        ));
+        );
+        if consensus_enabled(resolved) {
+            let consensus = run_consensus_loop(ConsensusRunInput {
+                resolved,
+                query: &query,
+                workflow: &workflow,
+                iteration,
+                members: &final_members,
+                prior_iterations: &iterations,
+                progress: progress.clone(),
+                cancel: cancel.clone(),
+            });
+            let approved = consensus.approved;
+            record.consensus = Some(consensus.clone());
+            final_consensus = Some(consensus);
+            iterations.push(record);
+            previous_iteration = final_members.clone();
+            if approved && resolved.raw.stop_when == STOP_WHEN_CONSENSUS {
+                break;
+            }
+            continue;
+        }
+        iterations.push(record);
         previous_iteration = final_members.clone();
     }
 
@@ -2326,6 +3047,7 @@ fn run_amon_hen_with_progress_and_cancel(
         iterations,
         members: final_members,
         summary,
+        consensus: final_consensus,
     }
 }
 
@@ -2343,19 +3065,85 @@ fn build_workflow(resolved: &ResolvedArgs) -> Workflow {
     if let Some(value) = resolved.raw.gemini_sub_agents {
         teams.insert("gemini".to_string(), value);
     }
-    Workflow {
+    let mut workflow = Workflow {
         handoff: resolved.raw.handoff || resolved.raw.planner_mode == PLANNER_MODE_REVIEW_CHAIN,
         lead: resolved.raw.lead.clone(),
         planner: resolved.raw.planner.clone(),
         planner_mode: resolved.raw.planner_mode.clone(),
+        owner_map: resolved.raw.owner_map.clone(),
+        handshake: handshake_requested(&resolved.raw),
+        handshake_agents: Vec::new(),
         iterations: resolved.raw.iterations.max(1),
         team_work: resolved.raw.team_work,
         teams,
+    };
+    workflow.handoff = workflow.handoff || workflow.handshake;
+    if workflow.handshake {
+        workflow.handshake_agents = build_handshake_agent_slots(resolved, &workflow);
     }
+    workflow
 }
 
 fn effective_team_size(workflow: &Workflow, member: &str) -> usize {
     *workflow.teams.get(member).unwrap_or(&workflow.team_work)
+}
+
+fn build_handshake_agent_slots(resolved: &ResolvedArgs, workflow: &Workflow) -> Vec<AgentSlot> {
+    let override_sub_agents =
+        handshake_sub_agent_override(&resolved.raw.handshake_sub_agents).unwrap_or(None);
+    let specs = resolved
+        .raw
+        .handshake_agents
+        .iter()
+        .filter_map(|value| parse_handshake_agent_spec(value).ok())
+        .collect::<Vec<_>>();
+    let specs = if specs.is_empty() {
+        let provider = resolved
+            .raw
+            .handshake_provider
+            .as_deref()
+            .or(workflow.planner.as_deref())
+            .or(workflow.lead.as_deref())
+            .or_else(|| resolved.members.first().map(String::as_str))
+            .unwrap_or("codex")
+            .to_string();
+        vec![
+            HandshakeAgentSpec {
+                role: "planner".to_string(),
+                provider: provider.clone(),
+                sub_agents: None,
+            },
+            HandshakeAgentSpec {
+                role: "executor".to_string(),
+                provider: provider.clone(),
+                sub_agents: None,
+            },
+            HandshakeAgentSpec {
+                role: "reviewer".to_string(),
+                provider,
+                sub_agents: None,
+            },
+        ]
+    } else {
+        specs
+    };
+
+    specs
+        .into_iter()
+        .enumerate()
+        .map(|(index, spec)| {
+            let team_size = spec
+                .sub_agents
+                .or(override_sub_agents)
+                .unwrap_or_else(|| effective_team_size(workflow, &spec.provider));
+            AgentSlot {
+                id: format!("{}-{}", spec.role, index + 1),
+                provider: spec.provider,
+                role: spec.role,
+                team_size,
+            }
+        })
+        .collect()
 }
 
 fn iteration_record(
@@ -2396,6 +3184,7 @@ fn iteration_record(
         sub_agents,
         handoff_context,
         summary_context,
+        consensus: None,
         token_usage,
         tool_calls,
     }
@@ -2417,6 +3206,573 @@ fn iteration_handoff_context(
     (!context.is_empty()).then_some(context)
 }
 
+fn consensus_enabled(resolved: &ResolvedArgs) -> bool {
+    resolved.raw.consensus == CONSENSUS_REQUIRED
+}
+
+fn consensus_config(resolved: &ResolvedArgs) -> ConsensusConfig {
+    let reviewers = if resolved.raw.consensus_reviewers.is_empty() {
+        resolved.members.clone()
+    } else {
+        resolved
+            .raw
+            .consensus_reviewers
+            .iter()
+            .map(|reviewer| reviewer.trim().to_string())
+            .filter(|reviewer| !reviewer.is_empty())
+            .collect()
+    };
+    ConsensusConfig {
+        mode: resolved.raw.consensus.clone(),
+        reviewers,
+        failure_policy: resolved.raw.failure_policy.clone(),
+        review_rounds: resolved.raw.review_rounds.max(1),
+        require_final_diff_review: resolved.raw.require_final_diff_review,
+        require_tests: resolved.raw.require_tests,
+        require_secret_scan: resolved.raw.require_secret_scan,
+        require_clean_git_diff: resolved.raw.require_clean_git_diff,
+        stop_when: resolved.raw.stop_when.clone(),
+        owner_map: resolved.raw.owner_map.clone(),
+    }
+}
+
+struct ConsensusRunInput<'a> {
+    resolved: &'a ResolvedArgs,
+    query: &'a str,
+    workflow: &'a Workflow,
+    iteration: usize,
+    members: &'a [EngineResult],
+    prior_iterations: &'a [IterationRecord],
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+fn run_consensus_loop(input: ConsensusRunInput<'_>) -> ConsensusResult {
+    let resolved = input.resolved;
+    let workflow = input.workflow;
+    let iteration = input.iteration;
+    let config = consensus_config(resolved);
+    let failed_members = input
+        .members
+        .iter()
+        .filter(|member| member.status != "ok")
+        .map(|member| member.name.clone())
+        .collect::<Vec<_>>();
+    let takeover_required =
+        config.failure_policy == FAILURE_POLICY_TAKEOVER && !failed_members.is_empty();
+    let mut rounds = Vec::new();
+    let mut final_blockers = Vec::new();
+    let mut final_takeover_by = Vec::new();
+
+    for round in 1..=config.review_rounds {
+        emit_runtime_event(
+            &input.progress,
+            resolved.raw.verbose,
+            progress_event_with_context(
+                None,
+                None,
+                ProgressStage::Start,
+                Some("consensus"),
+                Some(iteration),
+                Some(workflow.iterations),
+                false,
+                None,
+                None,
+                vec![],
+                format!(
+                    "[amon-hen] consensus round {round}/{} started",
+                    config.review_rounds
+                ),
+            ),
+        );
+        let checks = run_consensus_checks(
+            resolved,
+            &config,
+            input.progress.clone(),
+            input.cancel.clone(),
+        );
+        let mut blockers = consensus_check_blockers(&checks);
+        let mut reviews = Vec::new();
+        let mut round_takeover_by = Vec::new();
+        let mut prior_reviews = Vec::new();
+
+        for reviewer in &config.reviewers {
+            let review = run_consensus_reviewer(ConsensusReviewerInput {
+                resolved,
+                query: input.query,
+                workflow,
+                iteration,
+                round,
+                config: &config,
+                members: input.members,
+                prior_iterations: input.prior_iterations,
+                checks: &checks,
+                prior_reviews: &prior_reviews,
+                failed_members: &failed_members,
+                progress: input.progress.clone(),
+                cancel: input.cancel.clone(),
+                reviewer,
+            });
+            if review.approved {
+                for takeover in &review.takeover_for {
+                    if failed_members.iter().any(|failed| failed == takeover)
+                        && !round_takeover_by.iter().any(|seen| seen == reviewer)
+                    {
+                        round_takeover_by.push(reviewer.clone());
+                    }
+                }
+            }
+            if review.status != "ok" {
+                blockers.push(format!(
+                    "{} consensus review failed with status {}",
+                    reviewer, review.status
+                ));
+            } else if !review.approved {
+                blockers.push(format!("{reviewer} did not approve consensus"));
+            }
+            blockers.extend(
+                review
+                    .blockers
+                    .iter()
+                    .map(|blocker| format!("{reviewer}: {blocker}")),
+            );
+            prior_reviews.push(review.result.clone());
+            reviews.push(review);
+        }
+
+        if takeover_required && round_takeover_by.is_empty() {
+            blockers.push(format!(
+                "failure-policy takeover requires a successful reviewer to take over failed agents: {}",
+                failed_members.join(",")
+            ));
+        }
+        if config.owner_map == OWNER_MAP_STRICT
+            && !reviews
+                .iter()
+                .any(|review| review.approved && review.status == "ok")
+        {
+            blockers.push(
+                "owner-map strict requires at least one successful approving reviewer".to_string(),
+            );
+        }
+        blockers.sort();
+        blockers.dedup();
+        round_takeover_by.sort();
+        round_takeover_by.dedup();
+        let approved = blockers.is_empty()
+            && reviews.len() == config.reviewers.len()
+            && reviews
+                .iter()
+                .all(|review| review.approved && review.status == "ok");
+        let status = if approved { "approved" } else { "blocked" }.to_string();
+        emit_runtime_event(
+            &input.progress,
+            resolved.raw.verbose,
+            progress_event_with_context(
+                None,
+                None,
+                ProgressStage::Done,
+                Some(&status),
+                Some(iteration),
+                Some(workflow.iterations),
+                false,
+                None,
+                None,
+                vec![],
+                format!("[amon-hen] consensus round {round} {status}"),
+            ),
+        );
+        final_blockers = blockers.clone();
+        final_takeover_by = round_takeover_by.clone();
+        rounds.push(ConsensusRound {
+            round,
+            status: status.clone(),
+            checks,
+            reviews,
+            blockers,
+            takeover_by: round_takeover_by,
+        });
+        if approved {
+            break;
+        }
+    }
+
+    let approved = rounds
+        .last()
+        .is_some_and(|round| round.status == "approved");
+    ConsensusResult {
+        status: if approved { "approved" } else { "blocked" }.to_string(),
+        iteration,
+        approved,
+        config,
+        rounds,
+        blockers: final_blockers,
+        takeover_required,
+        takeover_by: final_takeover_by,
+    }
+}
+
+struct ConsensusReviewerInput<'a> {
+    resolved: &'a ResolvedArgs,
+    query: &'a str,
+    workflow: &'a Workflow,
+    iteration: usize,
+    round: usize,
+    config: &'a ConsensusConfig,
+    members: &'a [EngineResult],
+    prior_iterations: &'a [IterationRecord],
+    checks: &'a [ConsensusCheck],
+    prior_reviews: &'a [EngineResult],
+    failed_members: &'a [String],
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+    reviewer: &'a str,
+}
+
+fn run_consensus_reviewer(input: ConsensusReviewerInput<'_>) -> ConsensusReview {
+    let resolved = input.resolved;
+    let iteration = input.iteration;
+    let round = input.round;
+    let reviewer = input.reviewer;
+    let role = format!("consensus-reviewer-round-{round}");
+    let prompt = build_consensus_review_prompt(ConsensusPromptInput {
+        query: input.query,
+        workflow: input.workflow,
+        iteration,
+        round,
+        config: input.config,
+        members: input.members,
+        prior_iterations: input.prior_iterations,
+        checks: input.checks,
+        prior_reviews: input.prior_reviews,
+        failed_members: input.failed_members,
+        max_prompt_chars: resolved.raw.max_prompt_chars,
+        reviewer,
+    });
+    let mut options = engine_options(
+        resolved,
+        EngineOptionsInput {
+            member: reviewer,
+            prompt,
+            role: &role,
+            iteration,
+            workflow: input.workflow,
+            progress: input.progress,
+            cancel: input.cancel,
+        },
+    );
+    options.team_size = 0;
+    let result = run_engine(reviewer, options);
+    let approved = result.status == "ok" && consensus_output_approves(&result.output);
+    let blockers = consensus_output_blockers(&result.output);
+    let takeover_for = consensus_output_takeover_for(&result.output);
+    ConsensusReview {
+        provider: reviewer.to_string(),
+        role,
+        status: result.status.clone(),
+        approved,
+        blockers,
+        takeover_for,
+        result,
+    }
+}
+
+struct ConsensusPromptInput<'a> {
+    query: &'a str,
+    workflow: &'a Workflow,
+    iteration: usize,
+    round: usize,
+    config: &'a ConsensusConfig,
+    members: &'a [EngineResult],
+    prior_iterations: &'a [IterationRecord],
+    checks: &'a [ConsensusCheck],
+    prior_reviews: &'a [EngineResult],
+    failed_members: &'a [String],
+    max_prompt_chars: usize,
+    reviewer: &'a str,
+}
+
+fn build_consensus_review_prompt(input: ConsensusPromptInput<'_>) -> String {
+    let mut sections = vec![
+        "You are an Amon Hen consensus reviewer in a fail-closed agent-to-agent review loop."
+            .to_string(),
+        format!(
+            "Reviewer: {}. Consensus round: {}. Iteration: {}/{}.",
+            input.reviewer, input.round, input.iteration, input.workflow.iterations
+        ),
+        format!(
+            "Consensus policy: mode={}, failure_policy={}, owner_map={}, require_final_diff_review={}, require_tests={}, require_secret_scan={}, require_clean_git_diff={}.",
+            input.config.mode,
+            input.config.failure_policy,
+            input.config.owner_map,
+            input.config.require_final_diff_review,
+            input.config.require_tests,
+            input.config.require_secret_scan,
+            input.config.require_clean_git_diff,
+        ),
+        "Your job is to review the actual agent outputs, current repository evidence, and prior reviewer notes. Approve only if the implementation is safe, tested, reviewable, and no required evidence is missing.".to_string(),
+        "If the failure policy is takeover and an agent failed, explicitly take over only if you reviewed the failed scope and can stand behind the final state.".to_string(),
+        "If owner-map is strict, block unless ownership is clear and changes do not create uncontrolled overlap.".to_string(),
+    ];
+    if !input.failed_members.is_empty() {
+        sections.push(format!(
+            "Failed agents requiring takeover consideration: {}",
+            input.failed_members.join(",")
+        ));
+    }
+    sections.push(format!("Original user query:\n{}", input.query.trim()));
+    let member_blocks = input
+        .members
+        .iter()
+        .map(|member| {
+            format!(
+                "### {} ({}) status={}\nDetail: {}\nOutput:\n{}",
+                member.name,
+                member.role,
+                member.status,
+                sanitize_status_detail(&member.detail),
+                bounded_context_text(
+                    &member.output,
+                    input.config_review_budget(),
+                    "member output"
+                )
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    sections.push(format!("Current iteration agent outputs:\n{member_blocks}"));
+    if !input.prior_iterations.is_empty() {
+        let prior = input
+            .prior_iterations
+            .iter()
+            .filter_map(|iteration| iteration.consensus.as_ref())
+            .map(|consensus| {
+                format!(
+                    "iteration {} consensus={} blockers={}",
+                    consensus.iteration,
+                    consensus.status,
+                    consensus.blockers.join(" | ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !prior.trim().is_empty() {
+            sections.push(format!("Prior consensus rounds:\n{prior}"));
+        }
+    }
+    if !input.prior_reviews.is_empty() {
+        let reviews = input
+            .prior_reviews
+            .iter()
+            .map(|review| {
+                format!(
+                    "### {} ({}) status={}\n{}",
+                    review.name,
+                    review.role,
+                    review.status,
+                    bounded_context_text(
+                        &review.output,
+                        input.config_review_budget(),
+                        "review output"
+                    )
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        sections.push(format!(
+            "Earlier reviewer handoffs in this round:\n{reviews}"
+        ));
+    }
+    let checks = input
+        .checks
+        .iter()
+        .map(|check| {
+            format!(
+                "### {} [{}]\ncommand: {}\ndetail: {}\nstdout:\n{}\nstderr:\n{}",
+                check.name,
+                check.command.status,
+                check.command.command,
+                check.command.detail,
+                bounded_context_text(&check.stdout, 6_000, "check stdout"),
+                bounded_context_text(&check.stderr, 3_000, "check stderr")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    sections.push(format!("Required evidence checks:\n{checks}"));
+    sections.push(
+        "Return your review with concrete findings. End with exactly these machine-readable lines:\n\
+         CONSENSUS: approve|block\n\
+         BLOCKERS: comma-separated blockers or none\n\
+         TAKEOVER_FOR: comma-separated failed providers you explicitly take over or none"
+            .to_string(),
+    );
+    limit_provider_prompt(&sections.join("\n\n"), input.max_prompt_chars)
+}
+
+trait ConsensusPromptBudget {
+    fn config_review_budget(&self) -> usize;
+}
+
+impl ConsensusPromptBudget for ConsensusPromptInput<'_> {
+    fn config_review_budget(&self) -> usize {
+        12_000
+    }
+}
+
+fn run_consensus_checks(
+    resolved: &ResolvedArgs,
+    config: &ConsensusConfig,
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Vec<ConsensusCheck> {
+    let mut checks = Vec::new();
+    if config.require_clean_git_diff {
+        checks.push(run_consensus_shell_check(
+            resolved,
+            "clean-git-diff",
+            "git diff --check && git status --short && git diff --stat",
+            progress.clone(),
+            cancel.clone(),
+        ));
+    }
+    if config.require_secret_scan {
+        let command = secret_scan_command();
+        checks.push(run_consensus_shell_check(
+            resolved,
+            "secret-scan",
+            &command,
+            progress.clone(),
+            cancel.clone(),
+        ));
+    }
+    if config.require_tests {
+        checks.push(run_consensus_shell_check(
+            resolved,
+            "tests",
+            "if [ -f Makefile ] && grep -Eq '(^|^[[:space:]]*)test:' Makefile; then make test; elif [ -f Cargo.toml ]; then cargo test --workspace --locked; elif [ -f package.json ]; then npm test; elif [ -f pyproject.toml ] || [ -d tests ]; then python -m pytest; else echo 'No standard test command detected'; exit 1; fi",
+            progress.clone(),
+            cancel.clone(),
+        ));
+    }
+    if config.require_final_diff_review {
+        checks.push(run_consensus_shell_check(
+            resolved,
+            "final-diff-review",
+            "git status --short && git diff --stat && git diff --name-only",
+            progress,
+            cancel,
+        ));
+    }
+    checks
+}
+
+fn secret_scan_command() -> String {
+    let sensitive_patterns = [
+        format!("{}{}", "sk-", "ant"),
+        "AQ[.]Ab".to_string(),
+        format!("{}{}", "lin_", "api"),
+        format!("{}{}", "cfat", "_"),
+        format!("{}{}", "OPEN", "SSH"),
+        format!("{}{}", "Digital", "Ocean"),
+        "104[.]248".to_string(),
+        format!("{}{}", "cf", "@"),
+        format!("{}{}", "e132", "cc"),
+        "/Users/[^[:space:]]+".to_string(),
+        format!("{}{}", "Downloads/", "council"),
+        format!("{}{}", "node ", "/Users"),
+    ]
+    .join("|");
+
+    format!(
+        "if rg -n '{sensitive_patterns}' -g '!target/**' -g '!web/node_modules/**' -g '!web/dist/**' -g '!web/.astro/**' .; then echo 'sensitive pattern scan found matches'; exit 1; else code=$?; if [ \"$code\" -eq 1 ]; then echo 'sensitive pattern scan clean'; exit 0; else exit \"$code\"; fi; fi"
+    )
+}
+
+fn run_consensus_shell_check(
+    resolved: &ResolvedArgs,
+    name: &str,
+    command: &str,
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> ConsensusCheck {
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    let args = if cfg!(windows) {
+        vec!["/C".to_string(), command.to_string()]
+    } else {
+        vec!["-lc".to_string(), command.to_string()]
+    };
+    emit_runtime_event(
+        &progress,
+        resolved.raw.verbose,
+        progress_event(
+            None,
+            None,
+            ProgressStage::Context,
+            Some("consensus-check"),
+            format!("[amon-hen] consensus check `{name}`"),
+        ),
+    );
+    let result = run_command(
+        CommandRequest::new(shell, &args, &resolved.cwd, resolved.raw.timeout * 1000)
+            .progress(command_progress(
+                Some(&format!("consensus check `{name}`")),
+                progress,
+            ))
+            .cancel(cancel),
+    );
+    ConsensusCheck {
+        name: name.to_string(),
+        command: command_telemetry(&result),
+        stdout: truncate(&sanitize_status_detail(&result.stdout), 20_000),
+        stderr: truncate(&sanitize_status_detail(&result.stderr), 10_000),
+    }
+}
+
+fn consensus_check_blockers(checks: &[ConsensusCheck]) -> Vec<String> {
+    checks
+        .iter()
+        .filter(|check| check.command.status != "ok")
+        .map(|check| {
+            format!(
+                "{} check failed: {}",
+                check.name,
+                sanitize_status_detail(&check.command.detail)
+            )
+        })
+        .collect()
+}
+
+fn consensus_output_approves(output: &str) -> bool {
+    output
+        .lines()
+        .rev()
+        .map(|line| line.trim().to_ascii_lowercase())
+        .any(|line| line == "consensus: approve" || line == "consensus: approved")
+}
+
+fn consensus_output_blockers(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("BLOCKERS:"))
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"))
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn consensus_output_takeover_for(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("TAKEOVER_FOR:"))
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"))
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn run_iteration(
     resolved: &ResolvedArgs,
     query: &str,
@@ -2426,6 +3782,18 @@ fn run_iteration(
     progress: Option<ProgressSink>,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<EngineResult> {
+    if workflow.handshake {
+        return run_handshake_iteration(
+            resolved,
+            query,
+            workflow,
+            iteration,
+            previous_iteration,
+            progress,
+            cancel,
+        );
+    }
+
     let ordered = execution_order(
         &resolved.members,
         workflow.planner.as_deref(),
@@ -2569,10 +3937,51 @@ fn run_iteration(
     results
 }
 
+fn run_handshake_iteration(
+    resolved: &ResolvedArgs,
+    query: &str,
+    workflow: &Workflow,
+    iteration: usize,
+    previous_iteration: &[EngineResult],
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Vec<EngineResult> {
+    let mut results = Vec::new();
+    for slot in &workflow.handshake_agents {
+        let prompt = build_member_prompt(MemberPromptInput {
+            query,
+            role: &slot.role,
+            workflow,
+            iteration,
+            team_size: slot.team_size,
+            max_member_chars: resolved.raw.max_member_chars,
+            max_prompt_chars: resolved.raw.max_prompt_chars,
+            previous_iteration,
+            handoff_results: &results,
+            plan_output: "",
+        });
+        let mut options = engine_options(
+            resolved,
+            EngineOptionsInput {
+                member: &slot.provider,
+                prompt,
+                role: &slot.role,
+                iteration,
+                workflow,
+                progress: progress.clone(),
+                cancel: cancel.clone(),
+            },
+        );
+        options.team_size = slot.team_size;
+        results.push(run_engine(&slot.provider, options));
+    }
+    results
+}
+
 fn planner_mode_runs_serial(workflow: &Workflow) -> bool {
     matches!(
         workflow.planner_mode.as_str(),
-        PLANNER_MODE_BLOCKING | PLANNER_MODE_REVIEW_CHAIN
+        PLANNER_MODE_BLOCKING | PLANNER_MODE_REVIEW_CHAIN | PLANNER_MODE_HANDSHAKE
     )
 }
 
@@ -3524,12 +4933,17 @@ where
                 Ok(read) => read,
                 Err(_) => break,
             };
-            let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let chunk = String::from_utf8_lossy(&buffer[..read]);
             text.push_str(&chunk);
             pending.push_str(&chunk);
             while let Some(newline) = pending.find('\n') {
-                let line = pending[..newline].trim_end_matches('\r').to_string();
-                pending = pending[newline + 1..].to_string();
+                let mut line = pending.drain(..=newline).collect::<String>();
+                if line.ends_with('\n') {
+                    line.pop();
+                }
+                if line.ends_with('\r') {
+                    line.pop();
+                }
                 if stream_state.maybe_emit_assistant_delta(
                     &progress,
                     stream,
@@ -3567,14 +4981,14 @@ where
 
 struct ProviderStreamState {
     assistant_text: String,
-    emitted_assistant_chars: usize,
+    emitted_assistant_bytes: usize,
 }
 
 impl ProviderStreamState {
     fn new() -> Self {
         Self {
             assistant_text: String::new(),
-            emitted_assistant_chars: 0,
+            emitted_assistant_bytes: 0,
         }
     }
 
@@ -3600,12 +5014,11 @@ impl ProviderStreamState {
         }
         self.assistant_text.push_str(&delta);
         let now = Instant::now();
-        let chars_since_emit = self
+        let bytes_since_emit = self
             .assistant_text
-            .chars()
-            .count()
-            .saturating_sub(self.emitted_assistant_chars);
-        if chars_since_emit >= 96
+            .len()
+            .saturating_sub(self.emitted_assistant_bytes);
+        if bytes_since_emit >= 96
             || now.duration_since(*last_stream_event) >= PROVIDER_STREAM_EVENT_MIN_INTERVAL
         {
             self.emit_snapshot(progress, stream, accumulated);
@@ -3618,7 +5031,7 @@ impl ProviderStreamState {
         let Some(progress) = progress else {
             return;
         };
-        if self.assistant_text.chars().count() > self.emitted_assistant_chars {
+        if self.assistant_text.len() > self.emitted_assistant_bytes {
             self.emit_snapshot(progress, stream, accumulated);
         }
     }
@@ -3629,7 +5042,7 @@ impl ProviderStreamState {
             sanitize_status_detail(&tail_chars(&self.assistant_text, 900))
         );
         emit_provider_stream_visible(progress, stream, accumulated, &visible, Vec::new());
-        self.emitted_assistant_chars = self.assistant_text.chars().count();
+        self.emitted_assistant_bytes = self.assistant_text.len();
     }
 }
 
@@ -3817,15 +5230,9 @@ fn claude_assistant_text_delta(value: &Value) -> Option<String> {
 }
 
 fn tail_chars(text: &str, max_chars: usize) -> String {
-    let total = text.chars().count();
-    if total <= max_chars {
-        return text.to_string();
-    }
-    let tail = text
-        .chars()
-        .skip(total.saturating_sub(max_chars))
-        .collect::<String>();
-    format!("...{tail}")
+    byte_index_for_tail_chars(text, max_chars)
+        .map(|index| format!("...{}", &text[index..]))
+        .unwrap_or_else(|| text.to_string())
 }
 
 fn visible_tool_summary(tool: &ToolUsage) -> String {
@@ -4423,6 +5830,19 @@ fn build_member_prompt(input: MemberPromptInput<'_>) -> String {
                 .to_string(),
         );
     }
+    if input.workflow.handshake {
+        sections.push(
+            "Three-way handshake mode is enabled. The planner, executor, and reviewer are distinct Amon Hen agent roles even when they use the same underlying provider/model. Treat prior handoffs as agent-to-agent context, not your own earlier answer."
+                .to_string(),
+        );
+    }
+    if input.workflow.owner_map == OWNER_MAP_STRICT {
+        sections.push(
+            "Strict ownership is enabled. Before editing, state the files or scopes you own. \
+             Keep changes inside that scope, hand off unclear overlap for review, and block rather than overwrite another agent's work."
+                .to_string(),
+        );
+    }
     if !input.plan_output.trim().is_empty() {
         sections.push(format!(
             "Planner handoff:\n{}",
@@ -4481,6 +5901,8 @@ fn build_summary_prompt(
 fn role_instruction(role: &str) -> &'static str {
     match role {
         "planner" => "Plan the work: identify the approach, risks, checkpoints, and useful handoffs for the executors.",
+        "executor" => "Execute the work: use the planner handoff and current evidence, make the strongest safe implementation attempt, and leave reviewable output.",
+        "reviewer" => "Review the planner and executor handoffs plus the current state. Verify tests, risks, regressions, ownership, and whether the implementation should be accepted, revised, or blocked.",
         "lead" => "Lead the work: make the strongest direct attempt while watching for conflicts you may need to resolve in synthesis.",
         "lead+planner" => "Plan and lead the work: produce a practical plan, then make the strongest direct attempt from that plan.",
         _ => "Execute the work: use any plan or handoff context, then produce your independent best answer.",
@@ -4785,12 +6207,13 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn truncate(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        text.to_string()
-    } else {
-        let mut truncated = text.chars().take(max_chars).collect::<String>();
+    if let Some(index) = byte_index_after_chars(text, max_chars) {
+        let mut truncated = String::with_capacity(index + "\n...[truncated]".len());
+        truncated.push_str(&text[..index]);
         truncated.push_str("\n...[truncated]");
         truncated
+    } else {
+        text.to_string()
     }
 }
 
@@ -4830,12 +6253,39 @@ fn limit_provider_prompt(prompt: &str, max_chars: usize) -> String {
 }
 
 fn take_chars(text: &str, max_chars: usize) -> String {
-    text.chars().take(max_chars).collect()
+    byte_index_after_chars(text, max_chars)
+        .map(|index| text[..index].to_string())
+        .unwrap_or_else(|| text.to_string())
 }
 
 fn take_tail_chars(text: &str, max_chars: usize) -> String {
-    let total = text.chars().count();
-    text.chars().skip(total.saturating_sub(max_chars)).collect()
+    byte_index_for_tail_chars(text, max_chars)
+        .map(|index| text[index..].to_string())
+        .unwrap_or_else(|| text.to_string())
+}
+
+fn byte_index_after_chars(text: &str, max_chars: usize) -> Option<usize> {
+    if max_chars == 0 {
+        return (!text.is_empty()).then_some(0);
+    }
+    for (count, (index, _)) in text.char_indices().enumerate() {
+        if count == max_chars {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn byte_index_for_tail_chars(text: &str, max_chars: usize) -> Option<usize> {
+    if max_chars == 0 {
+        return (!text.is_empty()).then_some(text.len());
+    }
+    for (count, (index, _)) in text.char_indices().rev().enumerate() {
+        if count + 1 == max_chars {
+            return Some(index);
+        }
+    }
+    None
 }
 
 fn should_show_banner(raw: &CliArgs) -> bool {
@@ -4902,7 +6352,33 @@ fn render_human_result(result: &AmonHenResult, verbose: bool) -> String {
                 lines.push(indent(&member.output, "   "));
             }
         }
+        if let Some(consensus) = &result.consensus {
+            lines.push("----------- consensus -----------".to_string());
+            lines.push(format!(
+                "consensus [{}] iteration:{} rounds:{} reviewers:{}",
+                consensus.status,
+                consensus.iteration,
+                consensus.rounds.len(),
+                consensus.config.reviewers.join(",")
+            ));
+            for blocker in &consensus.blockers {
+                lines.push(format!("   blocker: {blocker}"));
+            }
+        }
         lines.push("----------- synthesis -----------".to_string());
+    }
+    if let Some(consensus) = &result.consensus {
+        if consensus.config.mode == CONSENSUS_REQUIRED && !consensus.approved {
+            lines.push(format!(
+                "Consensus blocked after {} round(s): {}",
+                consensus.rounds.len(),
+                if consensus.blockers.is_empty() {
+                    "no reviewer consensus".to_string()
+                } else {
+                    consensus.blockers.join("; ")
+                }
+            ));
+        }
     }
     if result.summary.status == "ok" {
         lines.push(result.summary.output.trim().to_string());
@@ -4920,7 +6396,14 @@ fn indent(text: &str, prefix: &str) -> String {
 }
 
 fn is_success(result: &AmonHenResult) -> bool {
-    result.members.iter().any(|member| member.status == "ok") && result.summary.status == "ok"
+    let consensus_ok = result
+        .consensus
+        .as_ref()
+        .map(|consensus| consensus.config.mode != CONSENSUS_REQUIRED || consensus.approved)
+        .unwrap_or(true);
+    result.members.iter().any(|member| member.status == "ok")
+        && result.summary.status == "ok"
+        && consensus_ok
 }
 
 #[cfg(test)]
@@ -4994,8 +6477,69 @@ mod tests {
         assert!(help.contains("--members codex,claude,gemini"));
         assert!(help.contains("--claude-permission-mode MODE"));
         assert!(help.contains("--gemini-approval-mode MODE"));
-        assert!(help.contains("blocking|parallel|review-chain"));
+        assert!(help.contains("--resume RUN_DIR"));
+        assert!(help.contains("--check-update"));
+        assert!(help.contains("--update"));
+        assert!(help.contains("blocking|parallel|review-chain|handshake"));
+        assert!(help.contains("--consensus off|required"));
+        assert!(help.contains("--failure-policy continue|takeover"));
+        assert!(help.contains("--owner-map flexible|strict"));
         assert!(!help.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn parses_resume_run_directory() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--studio",
+            "--resume",
+            ".amon-hen/runs/example",
+            "Continue the run",
+        ])
+        .unwrap();
+
+        assert_eq!(args.resume, Some(PathBuf::from(".amon-hen/runs/example")));
+        assert_eq!(args.prompt, vec!["Continue the run"]);
+    }
+
+    #[test]
+    fn update_flags_parse_without_prompt() {
+        let check = CliArgs::try_parse_from(["amon-hen", "--check-update"]).unwrap();
+        let update = CliArgs::try_parse_from(["amon-hen", "--update"]).unwrap();
+        let disabled = CliArgs::try_parse_from(["amon-hen", "--no-update-check", "hello"]).unwrap();
+
+        assert!(check.check_update);
+        assert!(update.update);
+        assert!(disabled.no_update_check);
+    }
+
+    #[test]
+    fn version_comparison_handles_multi_digit_patches() {
+        assert_eq!(version_cmp("0.1.25", "0.1.9"), std::cmp::Ordering::Greater);
+        assert_eq!(version_cmp("v1.2.0", "1.2"), std::cmp::Ordering::Equal);
+        assert_eq!(version_cmp("0.2.0", "0.10.0"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn update_changelog_extracts_versions_between_current_and_latest() {
+        let changelog = "\
+# Changelog
+
+## 0.1.27
+- latest
+
+## 0.1.26
+- middle
+
+## 0.1.25
+- current
+";
+        let extracted = extract_changelog_range(changelog, "0.1.25", "0.1.27").unwrap();
+
+        assert!(extracted.contains("## 0.1.27"));
+        assert!(extracted.contains("- latest"));
+        assert!(extracted.contains("## 0.1.26"));
+        assert!(!extracted.contains("## 0.1.25"));
     }
 
     #[test]
@@ -5040,6 +6584,89 @@ mod tests {
             resolved.raw.gemini_allowed_mcp_servers,
             vec!["linear", "github"]
         );
+    }
+
+    #[test]
+    fn parses_consensus_gate_flags() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--members",
+            "codex,claude,gemini",
+            "--consensus",
+            "required",
+            "--consensus-reviewers",
+            "codex,claude,gemini",
+            "--failure-policy",
+            "takeover",
+            "--review-rounds",
+            "3",
+            "--require-final-diff-review",
+            "--require-tests",
+            "--require-secret-scan",
+            "--require-clean-git-diff",
+            "--stop-when",
+            "consensus",
+            "--owner-map",
+            "strict",
+            "ship it",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let config = consensus_config(&resolved);
+
+        assert_eq!(config.mode, CONSENSUS_REQUIRED);
+        assert_eq!(config.reviewers, vec!["codex", "claude", "gemini"]);
+        assert_eq!(config.failure_policy, FAILURE_POLICY_TAKEOVER);
+        assert_eq!(config.review_rounds, 3);
+        assert!(config.require_final_diff_review);
+        assert!(config.require_tests);
+        assert!(config.require_secret_scan);
+        assert!(config.require_clean_git_diff);
+        assert_eq!(config.stop_when, STOP_WHEN_CONSENSUS);
+        assert_eq!(config.owner_map, OWNER_MAP_STRICT);
+    }
+
+    #[test]
+    fn parses_machine_readable_consensus_review_footer() {
+        let output = "Reviewed diff and tests.\nCONSENSUS: approve\nBLOCKERS: none\nTAKEOVER_FOR: gemini, codex";
+
+        assert!(consensus_output_approves(output));
+        assert!(consensus_output_blockers(output).is_empty());
+        assert_eq!(
+            consensus_output_takeover_for(output),
+            vec!["gemini".to_string(), "codex".to_string()]
+        );
+    }
+
+    #[test]
+    fn required_consensus_blocks_success_until_approved() {
+        let mut result = test_amon_hen_result(vec![test_engine_result("codex", "planner", 1)], 1);
+        result.consensus = Some(ConsensusResult {
+            status: "blocked".to_string(),
+            iteration: 1,
+            approved: false,
+            config: ConsensusConfig {
+                mode: CONSENSUS_REQUIRED.to_string(),
+                reviewers: vec!["codex".to_string()],
+                failure_policy: FAILURE_POLICY_TAKEOVER.to_string(),
+                review_rounds: 1,
+                require_final_diff_review: true,
+                require_tests: true,
+                require_secret_scan: true,
+                require_clean_git_diff: true,
+                stop_when: STOP_WHEN_CONSENSUS.to_string(),
+                owner_map: OWNER_MAP_STRICT.to_string(),
+            },
+            rounds: vec![],
+            blockers: vec!["reviewer did not approve".to_string()],
+            takeover_required: false,
+            takeover_by: vec![],
+        });
+
+        assert!(!is_success(&result));
+        result.consensus.as_mut().unwrap().approved = true;
+        result.consensus.as_mut().unwrap().status = "approved".to_string();
+        assert!(is_success(&result));
     }
 
     #[test]
@@ -5724,6 +7351,9 @@ mod tests {
             lead: Some("claude".to_string()),
             planner: Some("codex".to_string()),
             planner_mode: PLANNER_MODE_BLOCKING.to_string(),
+            owner_map: OWNER_MAP_STRICT.to_string(),
+            handshake: false,
+            handshake_agents: vec![],
             iterations: 2,
             team_work: 1,
             teams: HashMap::new(),
@@ -5744,6 +7374,7 @@ mod tests {
         assert!(prompt.contains("Lead model: claude."));
         assert!(prompt.contains("Planner model: codex."));
         assert!(prompt.contains("Your assigned role: planner."));
+        assert!(prompt.contains("Strict ownership is enabled."));
         assert!(prompt.contains("Current user query:"));
     }
 
@@ -5754,6 +7385,9 @@ mod tests {
             lead: Some("claude".to_string()),
             planner: Some("codex".to_string()),
             planner_mode: PLANNER_MODE_REVIEW_CHAIN.to_string(),
+            owner_map: OWNER_MAP_FLEXIBLE.to_string(),
+            handshake: false,
+            handshake_agents: vec![],
             iterations: 10,
             team_work: 3,
             teams: HashMap::new(),
@@ -6394,6 +8028,106 @@ mod tests {
     }
 
     #[test]
+    fn declarative_handshake_agents_build_role_slots() {
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--handshake-agents",
+            "planner=codex:2,executor=claude,reviewer=gemini:1",
+            "--team-work",
+            "4",
+            "ship",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let workflow = build_workflow(&resolved);
+
+        assert_eq!(resolved.members, vec!["codex", "claude", "gemini"]);
+        assert!(workflow.handshake);
+        assert_eq!(
+            workflow
+                .handshake_agents
+                .iter()
+                .map(|agent| (
+                    agent.provider.as_str(),
+                    agent.role.as_str(),
+                    agent.team_size
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("codex", "planner", 2),
+                ("claude", "executor", 4),
+                ("gemini", "reviewer", 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn single_provider_handshake_runs_distinct_agent_roles() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let Some(_env) = ProviderEnvGuard::install_echo_bins() else {
+            return;
+        };
+        let args = CliArgs::try_parse_from([
+            "amon-hen",
+            "--handshake",
+            "--handshake-provider",
+            "codex",
+            "--handshake-sub-agents",
+            "1",
+            "--timeout",
+            "5",
+            "ship from one model",
+        ])
+        .unwrap();
+        let resolved = resolve_args(args).unwrap();
+        let workflow = build_workflow(&resolved);
+
+        assert_eq!(resolved.members, vec!["codex"]);
+        assert!(workflow.handshake);
+        assert_eq!(
+            workflow
+                .handshake_agents
+                .iter()
+                .map(|agent| (
+                    agent.provider.as_str(),
+                    agent.role.as_str(),
+                    agent.team_size
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("codex", "planner", 1),
+                ("codex", "executor", 1),
+                ("codex", "reviewer", 1)
+            ]
+        );
+
+        let result = run_amon_hen_with_progress_and_cancel(
+            &resolved,
+            resolved.prompt.clone(),
+            vec![],
+            None,
+            None,
+        );
+        let iteration = result.iterations.first().expect("handshake iteration");
+        assert_eq!(
+            iteration
+                .members
+                .iter()
+                .map(|member| (member.name.as_str(), member.role.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("codex", "planner"),
+                ("codex", "executor"),
+                ("codex", "reviewer")
+            ]
+        );
+        assert!(iteration
+            .members
+            .iter()
+            .all(|member| member.sub_agents.len() == 1));
+    }
+
+    #[test]
     fn duplicate_members_are_deduped_in_input_order() {
         let args = CliArgs::try_parse_from([
             "amon-hen",
@@ -6687,6 +8421,9 @@ mod tests {
             lead: Some("claude".to_string()),
             planner: Some("codex".to_string()),
             planner_mode: PLANNER_MODE_BLOCKING.to_string(),
+            owner_map: OWNER_MAP_FLEXIBLE.to_string(),
+            handshake: false,
+            handshake_agents: vec![],
             iterations: iterations.len().max(1),
             team_work: 0,
             teams,
@@ -6701,6 +8438,7 @@ mod tests {
             iterations,
             members,
             summary: test_engine_result("codex", "summary", 1),
+            consensus: None,
         }
     }
 

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MENU: [&str; 18] = [
+const MENU: [&str; 19] = [
     "Run / re-run",
     "Cancel job",
     "Edit prompt",
@@ -39,6 +39,7 @@ const MENU: [&str; 18] = [
     "Agents",
     "Capabilities",
     "Refresh capabilities",
+    "Update Amon Hen",
     "Linear",
     "Help",
     "Quit",
@@ -119,6 +120,7 @@ struct StudioState {
     last_linear_result: Option<String>,
     last_auth_result: Option<String>,
     last_capability_result: Option<String>,
+    last_update_result: Option<String>,
     run_job: Option<StudioRunJob>,
     run_events: VecDeque<String>,
     artifacts: StudioArtifacts,
@@ -130,6 +132,10 @@ struct StudioState {
     live_token_usage: HashMap<String, TokenUsage>,
     live_tool_counts: HashMap<String, usize>,
     live_sub_agents: HashMap<String, HashSet<String>>,
+    live_agent_status: HashMap<String, String>,
+    live_agent_detail: HashMap<String, String>,
+    live_agent_token_usage: HashMap<String, TokenUsage>,
+    live_agent_tool_counts: HashMap<String, usize>,
     last_stream_log_at: HashMap<String, Instant>,
     live_assistant_lines: HashMap<String, usize>,
     status: String,
@@ -159,9 +165,10 @@ struct StudioArtifacts {
 }
 
 impl StudioArtifacts {
-    fn new(cwd: &Path) -> Self {
-        let dir = std::env::var_os("AMON_HEN_RUN_DIR")
-            .map(PathBuf::from)
+    fn new(cwd: &Path, resume: Option<&Path>) -> Self {
+        let dir = resume
+            .map(|path| resolve_resume_dir(cwd, path))
+            .or_else(|| std::env::var_os("AMON_HEN_RUN_DIR").map(PathBuf::from))
             .unwrap_or_else(|| cwd.join(".amon-hen").join("runs").join(studio_run_id()));
         Self { dir }
     }
@@ -222,6 +229,7 @@ enum StudioJobKind {
     CapabilitiesStatus,
     LinearStatus,
     LinearDeliver,
+    UpdateAmonHen,
 }
 
 impl StudioJobKind {
@@ -233,6 +241,7 @@ impl StudioJobKind {
             Self::CapabilitiesStatus => "Provider capabilities",
             Self::LinearStatus => "Linear status",
             Self::LinearDeliver => "Linear delivery",
+            Self::UpdateAmonHen => "Amon Hen update",
         }
     }
 
@@ -244,6 +253,7 @@ impl StudioJobKind {
             Self::CapabilitiesStatus => "Refreshing provider capabilities inside Studio",
             Self::LinearStatus => "Refreshing Linear status inside Studio",
             Self::LinearDeliver => "Delivering Linear work inside Studio",
+            Self::UpdateAmonHen => "Updating Amon Hen inside Studio",
         }
     }
 }
@@ -254,6 +264,7 @@ struct StudioJobOutcome {
     auth_result: Option<String>,
     capability_result: Option<String>,
     linear_result: Option<String>,
+    update_result: Option<String>,
 }
 
 enum StudioAction {
@@ -265,6 +276,7 @@ enum StudioAction {
     CapabilitiesStatus,
     LinearStatus,
     LinearDeliver,
+    UpdateAmonHen,
     Quit,
 }
 
@@ -277,6 +289,7 @@ fn dashboard_job_kind(action: &StudioAction) -> Option<StudioJobKind> {
         StudioAction::CapabilitiesStatus => Some(StudioJobKind::CapabilitiesStatus),
         StudioAction::LinearStatus => Some(StudioJobKind::LinearStatus),
         StudioAction::LinearDeliver => Some(StudioJobKind::LinearDeliver),
+        StudioAction::UpdateAmonHen => Some(StudioJobKind::UpdateAmonHen),
         StudioAction::None | StudioAction::CancelJob | StudioAction::Quit => None,
     }
 }
@@ -298,9 +311,23 @@ struct StudioProfile {
     summarizer: String,
     iterations: usize,
     team_work: usize,
+    handshake: bool,
+    handshake_provider: Option<String>,
+    handshake_agents: Vec<String>,
+    handshake_sub_agents: String,
     codex_sub_agents: Option<usize>,
     claude_sub_agents: Option<usize>,
     gemini_sub_agents: Option<usize>,
+    consensus: String,
+    consensus_reviewers: Vec<String>,
+    failure_policy: String,
+    review_rounds: usize,
+    require_final_diff_review: bool,
+    require_tests: bool,
+    require_secret_scan: bool,
+    require_clean_git_diff: bool,
+    stop_when: String,
+    owner_map: String,
     codex_model: Option<String>,
     claude_model: Option<String>,
     gemini_model: Option<String>,
@@ -368,6 +395,63 @@ struct StudioProfile {
     delivery_phases: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StudioStateSnapshot {
+    version: String,
+    saved_at_unix_secs: u64,
+    exited: bool,
+    exit_code: Option<i32>,
+    status: String,
+    cwd: String,
+    artifacts_dir: String,
+    prompt: String,
+    members: Vec<String>,
+    workflow: Workflow,
+    profile_name: String,
+    profile: StudioProfile,
+    prompt_files: Vec<String>,
+    prompt_commands: Vec<String>,
+    provider_status: HashMap<String, String>,
+    provider_detail: HashMap<String, String>,
+    live_token_usage: HashMap<String, TokenUsage>,
+    live_tool_counts: HashMap<String, usize>,
+    live_sub_agents: HashMap<String, Vec<String>>,
+    live_agent_status: HashMap<String, String>,
+    live_agent_detail: HashMap<String, String>,
+    live_agent_token_usage: HashMap<String, TokenUsage>,
+    live_agent_tool_counts: HashMap<String, usize>,
+    agents: Vec<StudioAgentState>,
+    run_events: Vec<String>,
+    last_result: Option<AmonHenResult>,
+    last_linear_result: Option<String>,
+    last_auth_result: Option<String>,
+    last_capability_result: Option<String>,
+    #[serde(default)]
+    last_update_result: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StudioAgentsArtifact {
+    version: String,
+    saved_at_unix_secs: u64,
+    status: String,
+    agents: Vec<StudioAgentState>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StudioAgentState {
+    provider: String,
+    role: String,
+    status: String,
+    detail: String,
+    iteration: usize,
+    total_iterations: usize,
+    token_usage: TokenUsage,
+    tool_count: usize,
+    sub_agent_count: usize,
+    sub_agents: Vec<StudioAgentState>,
+}
+
 struct TerminalGuard;
 
 impl TerminalGuard {
@@ -404,7 +488,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         return 0;
     }
 
-    let artifacts = StudioArtifacts::new(&resolved.cwd);
+    let artifacts = StudioArtifacts::new(&resolved.cwd, resolved.raw.resume.as_deref());
     let profile_path = studio_profile_path(&resolved.cwd);
     let profile_names = studio_profile_names(&profile_path).unwrap_or_default();
     let mut state = StudioState {
@@ -423,6 +507,7 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         last_linear_result: None,
         last_auth_result: None,
         last_capability_result: None,
+        last_update_result: None,
         run_job: None,
         run_events: VecDeque::new(),
         artifacts,
@@ -434,6 +519,10 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         live_token_usage: HashMap::new(),
         live_tool_counts: HashMap::new(),
         live_sub_agents: HashMap::new(),
+        live_agent_status: HashMap::new(),
+        live_agent_detail: HashMap::new(),
+        live_agent_token_usage: HashMap::new(),
+        live_agent_tool_counts: HashMap::new(),
         last_stream_log_at: HashMap::new(),
         live_assistant_lines: HashMap::new(),
         status: "Ready".to_string(),
@@ -450,6 +539,15 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
             VERSION
         ),
     );
+    if state.resolved.raw.resume.is_some() {
+        match read_studio_state_snapshot(&state.artifacts.dir) {
+            Ok(snapshot) => apply_resume_snapshot(&mut state, snapshot),
+            Err(error) => {
+                state.status = format!("Resume state unavailable: {error}");
+                write_studio_error_artifact(&state, &state.status);
+            }
+        }
+    }
 
     configure_studio_color(&state.resolved.raw);
 
@@ -471,6 +569,8 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
     };
     let artifact_message = format!("[studio] artifacts: {}", state.artifacts.dir.display());
     push_run_event(&mut state, artifact_message);
+    record_studio_startup_update_notice(&mut state);
+    write_state_artifacts(&state, None, false);
 
     loop {
         drain_studio_job(&mut state);
@@ -562,7 +662,34 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
                 state.resolved.raw.deliver_linear = true;
                 start_studio_action_job(&mut state, StudioJobKind::LinearDeliver);
             }
+            StudioAction::UpdateAmonHen => {
+                start_studio_action_job(&mut state, StudioJobKind::UpdateAmonHen);
+            }
         }
+    }
+}
+
+fn record_studio_startup_update_notice(state: &mut StudioState) {
+    if state.resolved.raw.no_update_check {
+        return;
+    }
+    let Ok(info) = check_for_update(&state.resolved.cwd, true) else {
+        return;
+    };
+    if !info.update_available {
+        return;
+    }
+    let rendered = render_update_check(&info);
+    state.last_update_result = Some(rendered.clone());
+    push_run_event(
+        state,
+        format!(
+            "[update] Amon Hen {} is available; choose Update Amon Hen from the command rail",
+            info.latest_version
+        ),
+    );
+    for line in render_changelog_excerpt(&info.changelog, 6).lines() {
+        push_run_event(state, format!("[update] {}", studio_clip(line, 200)));
     }
 }
 
@@ -591,6 +718,10 @@ fn start_studio_run(state: &mut StudioState) {
     state.live_token_usage.clear();
     state.live_tool_counts.clear();
     state.live_sub_agents.clear();
+    state.live_agent_status.clear();
+    state.live_agent_detail.clear();
+    state.live_agent_token_usage.clear();
+    state.live_agent_tool_counts.clear();
     state.last_stream_log_at.clear();
     state.live_assistant_lines.clear();
     state.result_scroll = 0;
@@ -604,6 +735,7 @@ fn start_studio_run(state: &mut StudioState) {
             .provider_status
             .insert(member.clone(), "queued".to_string());
     }
+    write_state_artifacts(state, None, false);
 
     let panic_tx = tx.clone();
     thread::spawn(move || {
@@ -663,6 +795,7 @@ fn start_studio_run(state: &mut StudioState) {
         cancel,
         kind: StudioJobKind::AmonHen,
     });
+    write_state_artifacts(state, None, false);
 }
 
 fn start_studio_action_job(state: &mut StudioState, kind: StudioJobKind) {
@@ -682,9 +815,10 @@ fn start_studio_action_job(state: &mut StudioState, kind: StudioJobKind) {
         StudioJobKind::AuthStatus | StudioJobKind::SocialLogin => Pane::Agents,
         StudioJobKind::CapabilitiesStatus => Pane::Capabilities,
         StudioJobKind::LinearStatus | StudioJobKind::LinearDeliver => Pane::Linear,
-        StudioJobKind::AmonHen => Pane::Results,
+        StudioJobKind::AmonHen | StudioJobKind::UpdateAmonHen => Pane::Results,
     };
     push_run_event(state, format!("[studio] {} queued", kind.label()));
+    write_state_artifacts(state, None, false);
 
     let panic_tx = tx.clone();
     thread::spawn(move || {
@@ -714,6 +848,7 @@ fn start_studio_action_job(state: &mut StudioState, kind: StudioJobKind) {
         cancel,
         kind,
     });
+    write_state_artifacts(state, None, false);
 }
 
 fn run_studio_action(
@@ -731,6 +866,7 @@ fn run_studio_action(
                 auth_result: Some(render_auth_statuses(&collect_auth_statuses(&resolved))),
                 capability_result: None,
                 linear_result: None,
+                update_result: None,
             })
         }
         StudioJobKind::AuthStatus => Ok(StudioJobOutcome {
@@ -742,6 +878,7 @@ fn run_studio_action(
             ))),
             capability_result: None,
             linear_result: None,
+            update_result: None,
         }),
         StudioJobKind::CapabilitiesStatus => Ok(StudioJobOutcome {
             status: "Provider capabilities refreshed".to_string(),
@@ -754,6 +891,7 @@ fn run_studio_action(
                 ),
             )),
             linear_result: None,
+            update_result: None,
         }),
         StudioJobKind::LinearStatus => {
             if cancel.load(Ordering::Relaxed) {
@@ -766,6 +904,7 @@ fn run_studio_action(
                 auth_result: None,
                 capability_result: None,
                 linear_result: Some(linear_delivery::render_linear_status(&status)),
+                update_result: None,
             })
         }
         StudioJobKind::LinearDeliver => {
@@ -789,10 +928,71 @@ fn run_studio_action(
                 auth_result: None,
                 capability_result: None,
                 linear_result: Some(linear_delivery::render_linear_delivery_result(&result)),
+                update_result: None,
             })
         }
+        StudioJobKind::UpdateAmonHen => run_studio_update(&resolved, tx, cancel),
         StudioJobKind::AmonHen => unreachable!("Amon Hen uses start_studio_run"),
     }
+}
+
+fn run_studio_update(
+    resolved: &ResolvedArgs,
+    tx: Sender<StudioJobMessage>,
+    cancel: Arc<AtomicBool>,
+) -> Result<StudioJobOutcome, String> {
+    let update_check = match check_for_update(&resolved.cwd, false) {
+        Ok(info) => {
+            let rendered = render_update_check(&info);
+            for line in rendered.lines().take(16) {
+                send_studio_log(&tx, format!("[update] {line}"));
+            }
+            rendered
+        }
+        Err(error) => {
+            let message = format!("Update check failed before install: {error}");
+            send_studio_log(&tx, format!("[update] {message}"));
+            message
+        }
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Amon Hen update cancelled".to_string());
+    }
+    let (_, _, display) = self_update_command();
+    send_studio_log(&tx, format!("[update] running `{display}`"));
+    let result = run_self_update_command(&resolved.cwd, Some(Arc::clone(&cancel)));
+    let telemetry = command_telemetry(&result);
+    for line in result.stdout.lines().take(24) {
+        send_studio_log(&tx, format!("[update] stdout: {}", studio_clip(line, 200)));
+    }
+    for line in result.stderr.lines().take(24) {
+        send_studio_log(&tx, format!("[update] stderr: {}", studio_clip(line, 200)));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Amon Hen update cancelled".to_string());
+    }
+    let update_result = format!(
+        "{update_check}\n\nCommand: {}\nStatus: {}\nExit: {}\nDuration: {:.1}s\n\nRestart this Amon Hen terminal session after a successful update.",
+        telemetry.command,
+        telemetry.status,
+        telemetry
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        telemetry.duration_ms as f64 / 1000.0
+    );
+    Ok(StudioJobOutcome {
+        status: if telemetry.status == "ok" {
+            "Amon Hen update completed; restart this terminal session".to_string()
+        } else {
+            "Amon Hen update failed".to_string()
+        },
+        focus: Pane::Results,
+        auth_result: None,
+        capability_result: None,
+        linear_result: None,
+        update_result: Some(update_result),
+    })
 }
 
 fn cancel_studio_job(state: &mut StudioState) {
@@ -811,6 +1011,7 @@ fn cancel_studio_job(state: &mut StudioState) {
         state,
         format!("[studio] {label} cancellation requested; owned subprocesses will be stopped where possible"),
     );
+    write_state_artifacts(state, None, false);
 }
 
 fn run_studio_social_login(
@@ -1075,6 +1276,7 @@ fn drain_studio_job(state: &mut StudioState) {
         }
     }
 
+    let had_messages = !messages.is_empty();
     let mut finished = false;
     for message in messages {
         match message {
@@ -1121,6 +1323,9 @@ fn drain_studio_job(state: &mut StudioState) {
                         if let Some(result) = outcome.linear_result {
                             state.last_linear_result = Some(result);
                         }
+                        if let Some(result) = outcome.update_result {
+                            state.last_update_result = Some(result);
+                        }
                         state.status = outcome.status;
                         state.focus = outcome.focus;
                         state
@@ -1160,6 +1365,9 @@ fn drain_studio_job(state: &mut StudioState) {
             format!("{label} running ({:.1}s)", elapsed.as_secs_f64())
         };
     }
+    if had_messages || finished {
+        write_state_artifacts(state, None, false);
+    }
 }
 
 fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
@@ -1171,32 +1379,45 @@ fn apply_progress_event(state: &mut StudioState, event: ProgressEvent) {
         push_run_event(state, studio_progress_display_line(&event));
     }
     if let Some(provider) = event.provider.clone() {
+        let role = event.role.clone().unwrap_or_else(|| "agent".to_string());
+        let agent_key = live_agent_key(&provider, &role);
         if let Some(usage) = event.token_usage.clone() {
-            state.live_token_usage.insert(provider.clone(), usage);
+            state
+                .live_token_usage
+                .insert(provider.clone(), usage.clone());
+            state
+                .live_agent_token_usage
+                .insert(agent_key.clone(), usage);
         }
         if !event.tool_calls.is_empty() {
             let count = state.live_tool_counts.entry(provider.clone()).or_default();
             *count = count.saturating_add(event.tool_calls.len());
+            let agent_count = state
+                .live_agent_tool_counts
+                .entry(agent_key.clone())
+                .or_default();
+            *agent_count = agent_count.saturating_add(event.tool_calls.len());
         }
         if event.is_sub_agent {
-            if let Some(role) = event.role.clone() {
-                state
-                    .live_sub_agents
-                    .entry(provider.clone())
-                    .or_default()
-                    .insert(role);
-            }
+            state
+                .live_sub_agents
+                .entry(provider.clone())
+                .or_default()
+                .insert(role.clone());
         }
-        let status = event.status.unwrap_or_else(|| match event.stage {
+        let status = event.status.clone().unwrap_or_else(|| match event.stage {
             ProgressStage::Done => "done".to_string(),
             _ => "running".to_string(),
         });
-        state.provider_status.insert(provider.clone(), status);
-        let role = event.role.unwrap_or_else(|| "agent".to_string());
+        state
+            .provider_status
+            .insert(provider.clone(), status.clone());
+        state.live_agent_status.insert(agent_key.clone(), status);
         let detail = live_assistant
             .as_ref()
             .map(|live| live.detail.clone())
             .unwrap_or_else(|| sanitize_status_detail(&event.message));
+        state.live_agent_detail.insert(agent_key, detail.clone());
         state
             .provider_detail
             .insert(provider, format!("{} | {}", role, detail));
@@ -1349,6 +1570,7 @@ fn write_studio_error_artifact(state: &StudioState, message: &str) {
     );
     state.artifacts.write_text("last-error.txt", &text);
     state.artifacts.write_text("status.txt", &text);
+    write_state_artifacts(state, None, false);
 }
 
 fn write_result_artifacts(state: &StudioState, result: &AmonHenResult) {
@@ -1359,6 +1581,401 @@ fn write_result_artifacts(state: &StudioState, result: &AmonHenResult) {
     if !is_success(result) {
         state.artifacts.write_text("last-error.txt", &diagnostic);
     }
+}
+
+fn write_state_artifacts(state: &StudioState, exit_code: Option<i32>, exited: bool) {
+    let snapshot = studio_state_snapshot(state, exit_code, exited);
+    state.artifacts.write_json("state.json", &snapshot);
+    state.artifacts.write_json(
+        "agents.json",
+        &StudioAgentsArtifact {
+            version: snapshot.version.clone(),
+            saved_at_unix_secs: snapshot.saved_at_unix_secs,
+            status: snapshot.status.clone(),
+            agents: snapshot.agents.clone(),
+        },
+    );
+    state.artifacts.write_text(
+        "planning-artifacts.md",
+        &render_planning_artifacts(&snapshot),
+    );
+    state
+        .artifacts
+        .write_text("resume.sh", &render_resume_script(&snapshot));
+}
+
+fn studio_state_snapshot(
+    state: &StudioState,
+    exit_code: Option<i32>,
+    exited: bool,
+) -> StudioStateSnapshot {
+    let mut live_sub_agents = HashMap::new();
+    for (provider, agents) in &state.live_sub_agents {
+        let mut values = agents.iter().cloned().collect::<Vec<_>>();
+        values.sort();
+        live_sub_agents.insert(provider.clone(), values);
+    }
+    StudioStateSnapshot {
+        version: VERSION.to_string(),
+        saved_at_unix_secs: unix_timestamp_secs(),
+        exited,
+        exit_code,
+        status: state.status.clone(),
+        cwd: state.resolved.cwd.display().to_string(),
+        artifacts_dir: state.artifacts.dir.display().to_string(),
+        prompt: state.prompt.clone(),
+        members: state.resolved.members.clone(),
+        workflow: build_workflow(&state.resolved),
+        profile_name: state.profile_name.clone(),
+        profile: profile_from_state(state),
+        prompt_files: state
+            .resolved
+            .raw
+            .files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        prompt_commands: state.resolved.raw.commands.clone(),
+        provider_status: state.provider_status.clone(),
+        provider_detail: state.provider_detail.clone(),
+        live_token_usage: state.live_token_usage.clone(),
+        live_tool_counts: state.live_tool_counts.clone(),
+        live_sub_agents,
+        live_agent_status: state.live_agent_status.clone(),
+        live_agent_detail: state.live_agent_detail.clone(),
+        live_agent_token_usage: state.live_agent_token_usage.clone(),
+        live_agent_tool_counts: state.live_agent_tool_counts.clone(),
+        agents: collect_agent_states(state),
+        run_events: state.run_events.iter().cloned().collect(),
+        last_result: state.last_result.clone(),
+        last_linear_result: state.last_linear_result.clone(),
+        last_auth_result: state.last_auth_result.clone(),
+        last_capability_result: state.last_capability_result.clone(),
+        last_update_result: state.last_update_result.clone(),
+    }
+}
+
+fn collect_agent_states(state: &StudioState) -> Vec<StudioAgentState> {
+    let mut agents = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(result) = &state.last_result {
+        for member in &result.members {
+            seen.insert(member.name.clone());
+            agents.push(agent_state_from_result(member));
+        }
+    }
+    for member in &state.resolved.members {
+        if seen.contains(member) {
+            continue;
+        }
+        let mut sub_agent_roles = state
+            .live_sub_agents
+            .get(member)
+            .map(|roles| roles.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        sub_agent_roles.sort();
+        let sub_agents = sub_agent_roles
+            .iter()
+            .map(|role| StudioAgentState {
+                provider: member.clone(),
+                role: role.clone(),
+                status: state
+                    .live_agent_status
+                    .get(&live_agent_key(member, role))
+                    .cloned()
+                    .unwrap_or_else(|| "seen".to_string()),
+                detail: state
+                    .live_agent_detail
+                    .get(&live_agent_key(member, role))
+                    .cloned()
+                    .unwrap_or_default(),
+                iteration: 0,
+                total_iterations: state.resolved.raw.iterations.max(1),
+                token_usage: state
+                    .live_agent_token_usage
+                    .get(&live_agent_key(member, role))
+                    .cloned()
+                    .unwrap_or_default(),
+                tool_count: *state
+                    .live_agent_tool_counts
+                    .get(&live_agent_key(member, role))
+                    .unwrap_or(&0),
+                sub_agent_count: 0,
+                sub_agents: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let role = provider_role_from_args(state, member);
+        let agent_key = live_agent_key(member, &role);
+        agents.push(StudioAgentState {
+            provider: member.clone(),
+            role,
+            status: state
+                .live_agent_status
+                .get(&agent_key)
+                .or_else(|| state.provider_status.get(member))
+                .cloned()
+                .unwrap_or_else(|| "ready".to_string()),
+            detail: state
+                .live_agent_detail
+                .get(&agent_key)
+                .or_else(|| state.provider_detail.get(member))
+                .cloned()
+                .unwrap_or_default(),
+            iteration: 0,
+            total_iterations: state.resolved.raw.iterations.max(1),
+            token_usage: state
+                .live_agent_token_usage
+                .get(&agent_key)
+                .or_else(|| state.live_token_usage.get(member))
+                .cloned()
+                .unwrap_or_default(),
+            tool_count: state
+                .live_agent_tool_counts
+                .get(&agent_key)
+                .copied()
+                .unwrap_or_else(|| *state.live_tool_counts.get(member).unwrap_or(&0)),
+            sub_agent_count: sub_agents.len(),
+            sub_agents,
+        });
+    }
+    agents
+}
+
+fn live_agent_key(provider: &str, role: &str) -> String {
+    format!("{provider}:{role}")
+}
+
+fn agent_state_from_result(result: &EngineResult) -> StudioAgentState {
+    let sub_agents = result
+        .sub_agents
+        .iter()
+        .map(agent_state_from_result)
+        .collect::<Vec<_>>();
+    StudioAgentState {
+        provider: result.name.clone(),
+        role: result.role.clone(),
+        status: result.status.clone(),
+        detail: result.detail.clone(),
+        iteration: result.iteration,
+        total_iterations: result.total_iterations,
+        token_usage: result.token_usage.clone(),
+        tool_count: result.tool_calls.len(),
+        sub_agent_count: sub_agents.len(),
+        sub_agents,
+    }
+}
+
+fn provider_role_from_args(state: &StudioState, member: &str) -> String {
+    let mut roles = Vec::new();
+    if state.resolved.raw.planner.as_deref() == Some(member) {
+        roles.push("planner");
+    }
+    if state.resolved.raw.lead.as_deref() == Some(member) {
+        roles.push("lead");
+    }
+    if roles.is_empty() {
+        "executor".to_string()
+    } else {
+        roles.join("+")
+    }
+}
+
+fn render_planning_artifacts(snapshot: &StudioStateSnapshot) -> String {
+    let mut text = String::new();
+    text.push_str("# Amon Hen Studio Planning Artifacts\n\n");
+    text.push_str(&format!(
+        "- saved_at_unix_secs: {}\n- status: {}\n- cwd: {}\n- artifacts_dir: {}\n- exited: {}\n",
+        snapshot.saved_at_unix_secs,
+        sanitize_status_detail(&snapshot.status),
+        snapshot.cwd,
+        snapshot.artifacts_dir,
+        snapshot.exited
+    ));
+    if let Some(code) = snapshot.exit_code {
+        text.push_str(&format!("- exit_code: {code}\n"));
+    }
+    text.push_str("\n## Workflow\n\n");
+    text.push_str(&format!(
+        "- members: {}\n- planner: {}\n- planner_mode: {}\n- lead: {}\n- summarizer: {}\n- handoff: {}\n- handshake: {}\n- iterations: {}\n- team_work: {}\n",
+        snapshot.members.join(","),
+        snapshot.workflow.planner.as_deref().unwrap_or("none"),
+        snapshot.workflow.planner_mode,
+        snapshot.workflow.lead.as_deref().unwrap_or("none"),
+        snapshot.profile.summarizer,
+        snapshot.workflow.handoff,
+        snapshot.workflow.handshake,
+        snapshot.workflow.iterations,
+        snapshot.workflow.team_work
+    ));
+    let mut teams = snapshot
+        .workflow
+        .teams
+        .iter()
+        .map(|(provider, count)| format!("{provider}:{count}"))
+        .collect::<Vec<_>>();
+    teams.sort();
+    text.push_str(&format!("- teams: {}\n", teams.join(",")));
+    if !snapshot.workflow.handshake_agents.is_empty() {
+        let agents = snapshot
+            .workflow
+            .handshake_agents
+            .iter()
+            .map(|agent| {
+                format!(
+                    "{}:{}:{}:{}",
+                    agent.id, agent.role, agent.provider, agent.team_size
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        text.push_str(&format!("- handshake_agents: {agents}\n"));
+    }
+    text.push_str("\n## Prompt\n\n");
+    text.push_str("```text\n");
+    text.push_str(&snapshot.prompt);
+    if !snapshot.prompt.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("```\n\n");
+    text.push_str("## Tagged Files\n\n");
+    if snapshot.prompt_files.is_empty() {
+        text.push_str("- none\n");
+    } else {
+        for file in &snapshot.prompt_files {
+            text.push_str(&format!("- {file}\n"));
+        }
+    }
+    text.push_str("\n## Prompt Commands\n\n");
+    if snapshot.prompt_commands.is_empty() {
+        text.push_str("- none\n");
+    } else {
+        for command in &snapshot.prompt_commands {
+            text.push_str(&format!("- `{}`\n", command.replace('`', "\\`")));
+        }
+    }
+    text.push_str("\n## Agent State\n\n");
+    for agent in &snapshot.agents {
+        text.push_str(&format!(
+            "- {} role={} status={} tokens={} tools={} sub_agents={}\n",
+            agent.provider,
+            agent.role,
+            agent.status,
+            agent.token_usage.total,
+            agent.tool_count,
+            agent.sub_agent_count
+        ));
+    }
+    if let Some(result) = &snapshot.last_result {
+        text.push_str("\n## Iteration Timeline\n\n");
+        for iteration in &result.iterations {
+            text.push_str(&format!(
+                "### Iteration {}/{} - {}\n\n",
+                iteration.iteration, iteration.total_iterations, iteration.status
+            ));
+            if let Some(consensus) = &iteration.consensus {
+                text.push_str(&format!(
+                    "#### Consensus\n\nstatus: {}\nrounds: {}\nreviewers: {}\n",
+                    consensus.status,
+                    consensus.rounds.len(),
+                    consensus.config.reviewers.join(",")
+                ));
+                if !consensus.blockers.is_empty() {
+                    text.push_str("blockers:\n");
+                    for blocker in &consensus.blockers {
+                        text.push_str(&format!("- {blocker}\n"));
+                    }
+                }
+                text.push('\n');
+            }
+            if let Some(handoff) = &iteration.handoff_context {
+                text.push_str("#### Handoff Context\n\n```text\n");
+                text.push_str(handoff);
+                if !handoff.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str("```\n\n");
+            }
+            if let Some(summary) = &iteration.summary_context {
+                text.push_str("#### Summary Context\n\n```text\n");
+                text.push_str(summary);
+                if !summary.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str("```\n\n");
+            }
+        }
+    } else if !snapshot.run_events.is_empty() {
+        text.push_str("\n## Live Run Log Tail\n\n```text\n");
+        for line in &snapshot.run_events {
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push_str("```\n");
+    }
+    text
+}
+
+fn render_resume_script(snapshot: &StudioStateSnapshot) -> String {
+    format!(
+        "#!/usr/bin/env bash\nset -euo pipefail\namon-hen --studio --resume {}\n",
+        shell_quote(&snapshot.artifacts_dir)
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn read_studio_state_snapshot(run_dir: &Path) -> Result<StudioStateSnapshot, String> {
+    let path = run_dir.join("state.json");
+    let text = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))
+}
+
+fn apply_resume_snapshot(state: &mut StudioState, snapshot: StudioStateSnapshot) {
+    apply_studio_profile(state, &snapshot.profile);
+    if state.prompt.trim().is_empty() && !snapshot.prompt.trim().is_empty() {
+        state.prompt = snapshot.prompt.clone();
+        state.resolved.prompt = snapshot.prompt.clone();
+    }
+    if !snapshot.members.is_empty() {
+        state.resolved.members = snapshot.members;
+        state.resolved.raw.members = state.resolved.members.clone();
+    }
+    state.profile_name = snapshot.profile_name;
+    state.provider_status = snapshot.provider_status;
+    state.provider_detail = snapshot.provider_detail;
+    state.live_token_usage = snapshot.live_token_usage;
+    state.live_tool_counts = snapshot.live_tool_counts;
+    state.live_sub_agents = snapshot
+        .live_sub_agents
+        .into_iter()
+        .map(|(provider, roles)| (provider, roles.into_iter().collect::<HashSet<_>>()))
+        .collect();
+    state.live_agent_status = snapshot.live_agent_status;
+    state.live_agent_detail = snapshot.live_agent_detail;
+    state.live_agent_token_usage = snapshot.live_agent_token_usage;
+    state.live_agent_tool_counts = snapshot.live_agent_tool_counts;
+    state.run_events = snapshot.run_events.into();
+    state.last_result = snapshot.last_result;
+    state.last_linear_result = snapshot.last_linear_result;
+    state.last_auth_result = snapshot.last_auth_result;
+    state.last_capability_result = snapshot.last_capability_result;
+    state.last_update_result = snapshot.last_update_result;
+    state.status = format!("Resumed from {}", state.artifacts.dir.display());
+    push_run_event(
+        state,
+        format!("[studio] resumed from {}", state.artifacts.dir.display()),
+    );
+}
+
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn result_diagnostic_summary(result: &AmonHenResult) -> String {
@@ -1377,6 +1994,18 @@ fn result_diagnostic_summary(result: &AmonHenResult) -> String {
         "summary: {} {}",
         result.summary.name, result.summary.status
     ));
+    if let Some(consensus) = &result.consensus {
+        lines.push(format!(
+            "consensus: {} iteration={} rounds={} reviewers={}",
+            consensus.status,
+            consensus.iteration,
+            consensus.rounds.len(),
+            consensus.config.reviewers.join(",")
+        ));
+        for blocker in &consensus.blockers {
+            lines.push(format!("consensus_blocker: {}", truncate(blocker, 300)));
+        }
+    }
     if !result.summary.detail.trim().is_empty() {
         lines.push(format!(
             "summary_detail: {}",
@@ -1427,6 +2056,7 @@ fn mark_studio_exit(state: &mut StudioState, code: i32) {
         );
         state.status = message.clone();
         write_studio_error_artifact(state, &message);
+        write_state_artifacts(state, Some(code), true);
         return;
     }
     let message = format!(
@@ -1435,6 +2065,7 @@ fn mark_studio_exit(state: &mut StudioState, code: i32) {
         state.artifacts.dir.display()
     );
     state.artifacts.write_text("status.txt", &message);
+    write_state_artifacts(state, Some(code), true);
 }
 
 fn should_log_progress_event(state: &mut StudioState, event: &ProgressEvent) -> bool {
@@ -1847,9 +2478,23 @@ fn profile_from_state(state: &StudioState) -> StudioProfile {
         summarizer: raw.summarizer.clone(),
         iterations: raw.iterations,
         team_work: raw.team_work,
+        handshake: raw.handshake,
+        handshake_provider: raw.handshake_provider.clone(),
+        handshake_agents: raw.handshake_agents.clone(),
+        handshake_sub_agents: raw.handshake_sub_agents.clone(),
         codex_sub_agents: raw.codex_sub_agents,
         claude_sub_agents: raw.claude_sub_agents,
         gemini_sub_agents: raw.gemini_sub_agents,
+        consensus: raw.consensus.clone(),
+        consensus_reviewers: raw.consensus_reviewers.clone(),
+        failure_policy: raw.failure_policy.clone(),
+        review_rounds: raw.review_rounds,
+        require_final_diff_review: raw.require_final_diff_review,
+        require_tests: raw.require_tests,
+        require_secret_scan: raw.require_secret_scan,
+        require_clean_git_diff: raw.require_clean_git_diff,
+        stop_when: raw.stop_when.clone(),
+        owner_map: raw.owner_map.clone(),
         codex_model: raw.codex_model.clone(),
         claude_model: raw.claude_model.clone(),
         gemini_model: raw.gemini_model.clone(),
@@ -1937,9 +2582,24 @@ fn apply_studio_profile(state: &mut StudioState, profile: &StudioProfile) {
     raw.summarizer = profile.summarizer.clone();
     raw.iterations = profile.iterations.max(1);
     raw.team_work = profile.team_work;
+    raw.handshake = profile.handshake;
+    raw.handshake_provider = profile.handshake_provider.clone();
+    raw.handshake_agents = profile.handshake_agents.clone();
+    raw.handshake_sub_agents =
+        non_empty_profile_value(&profile.handshake_sub_agents, &raw.handshake_sub_agents);
     raw.codex_sub_agents = profile.codex_sub_agents;
     raw.claude_sub_agents = profile.claude_sub_agents;
     raw.gemini_sub_agents = profile.gemini_sub_agents;
+    raw.consensus = non_empty_profile_value(&profile.consensus, &raw.consensus);
+    raw.consensus_reviewers = profile.consensus_reviewers.clone();
+    raw.failure_policy = non_empty_profile_value(&profile.failure_policy, &raw.failure_policy);
+    raw.review_rounds = profile.review_rounds.max(1);
+    raw.require_final_diff_review = profile.require_final_diff_review;
+    raw.require_tests = profile.require_tests;
+    raw.require_secret_scan = profile.require_secret_scan;
+    raw.require_clean_git_diff = profile.require_clean_git_diff;
+    raw.stop_when = non_empty_profile_value(&profile.stop_when, &raw.stop_when);
+    raw.owner_map = non_empty_profile_value(&profile.owner_map, &raw.owner_map);
     raw.codex_model = profile.codex_model.clone();
     raw.claude_model = profile.claude_model.clone();
     raw.gemini_model = profile.gemini_model.clone();
@@ -2182,6 +2842,7 @@ fn activate_menu(state: &mut StudioState) -> Result<StudioAction, String> {
             Ok(StudioAction::None)
         }
         "Refresh capabilities" => Ok(StudioAction::CapabilitiesStatus),
+        "Update Amon Hen" => Ok(StudioAction::UpdateAmonHen),
         "Linear" => {
             state.focus = Pane::Linear;
             Ok(StudioAction::None)
@@ -2370,6 +3031,7 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                     PLANNER_MODE_BLOCKING,
                     PLANNER_MODE_PARALLEL,
                     PLANNER_MODE_REVIEW_CHAIN,
+                    PLANNER_MODE_HANDSHAKE,
                 ],
                 delta,
             )
@@ -2478,6 +3140,61 @@ fn adjust_setting(state: &mut StudioState, delta: isize) -> Result<(), String> {
                 &["low", "medium", "high"],
                 delta,
             )
+        }
+        22 => {
+            state.resolved.raw.consensus = cycle_value(
+                &state.resolved.raw.consensus,
+                &[CONSENSUS_OFF, CONSENSUS_REQUIRED],
+                delta,
+            )
+        }
+        23 => {}
+        24 => {
+            state.resolved.raw.failure_policy = cycle_value(
+                &state.resolved.raw.failure_policy,
+                &[FAILURE_POLICY_CONTINUE, FAILURE_POLICY_TAKEOVER],
+                delta,
+            )
+        }
+        25 => {
+            state.resolved.raw.review_rounds =
+                adjust_number(state.resolved.raw.review_rounds, delta, 1, 10)
+        }
+        26 => {
+            state.resolved.raw.require_final_diff_review =
+                !state.resolved.raw.require_final_diff_review
+        }
+        27 => state.resolved.raw.require_tests = !state.resolved.raw.require_tests,
+        28 => state.resolved.raw.require_secret_scan = !state.resolved.raw.require_secret_scan,
+        29 => {
+            state.resolved.raw.require_clean_git_diff = !state.resolved.raw.require_clean_git_diff
+        }
+        30 => {
+            state.resolved.raw.stop_when = cycle_value(
+                &state.resolved.raw.stop_when,
+                &[STOP_WHEN_ITERATIONS, STOP_WHEN_CONSENSUS],
+                delta,
+            )
+        }
+        31 => {
+            state.resolved.raw.owner_map = cycle_value(
+                &state.resolved.raw.owner_map,
+                &[OWNER_MAP_FLEXIBLE, OWNER_MAP_STRICT],
+                delta,
+            )
+        }
+        32 => state.resolved.raw.handshake = !state.resolved.raw.handshake,
+        33 => {
+            state.resolved.raw.handshake_provider = cycle_optional_engine(
+                state.resolved.raw.handshake_provider.as_deref(),
+                &state.resolved.members,
+                delta,
+            )
+        }
+        34 => {}
+        35 => {
+            state.resolved.raw.handshake_sub_agents =
+                cycle_handshake_sub_agents(&state.resolved.raw.handshake_sub_agents, delta)
         }
         _ => {}
     }
@@ -3209,6 +3926,7 @@ fn render_configuration(frame: &mut Frame<'_>, area: Rect, state: &StudioState) 
                 "Results: wheel or Up/Down scrolls; PageUp/PageDown jumps; End follows live tail.",
             ),
             Line::from("Enter edits paths, lists, prompts, and Linear filters."),
+            Line::from("Command rail can update Amon Hen, refresh auth, and deliver Linear."),
             Line::from("r runs, c cancels the active job, e edits prompt."),
             Line::from("? toggles help."),
             Line::from("Ctrl+C twice exits without surprise."),
@@ -3688,6 +4406,49 @@ fn settings_lines(state: &StudioState) -> Vec<String> {
             format!("Codex effort: {}", opt(&state.resolved.raw.codex_effort)),
             format!("Claude effort: {}", opt(&state.resolved.raw.claude_effort)),
             format!("Gemini effort: {}", opt(&state.resolved.raw.gemini_effort)),
+            format!("Consensus: {}", state.resolved.raw.consensus),
+            format!(
+                "Consensus reviewers: {}",
+                list(&state.resolved.raw.consensus_reviewers)
+            ),
+            format!("Failure policy: {}", state.resolved.raw.failure_policy),
+            format!("Review rounds: {}", state.resolved.raw.review_rounds),
+            format!(
+                "Final diff review: {}",
+                on_off(state.resolved.raw.require_final_diff_review)
+            ),
+            format!(
+                "Require tests: {}",
+                on_off(state.resolved.raw.require_tests)
+            ),
+            format!(
+                "Secret scan: {}",
+                on_off(state.resolved.raw.require_secret_scan)
+            ),
+            format!(
+                "Clean git diff: {}",
+                on_off(state.resolved.raw.require_clean_git_diff)
+            ),
+            format!("Stop when: {}", state.resolved.raw.stop_when),
+            format!("Owner map: {}", state.resolved.raw.owner_map),
+            format!("Handshake: {}", on_off(state.resolved.raw.handshake)),
+            format!(
+                "Handshake provider: {}",
+                state
+                    .resolved
+                    .raw
+                    .handshake_provider
+                    .as_deref()
+                    .unwrap_or("auto")
+            ),
+            format!(
+                "Handshake agents: {}",
+                list(&state.resolved.raw.handshake_agents)
+            ),
+            format!(
+                "Handshake sub-agents: {}",
+                state.resolved.raw.handshake_sub_agents
+            ),
         ],
     )
 }
@@ -3857,6 +4618,11 @@ fn result_lines(state: &StudioState) -> Vec<String> {
         lines.extend(auth.lines().take(8).map(ToString::to_string));
         lines.push(String::new());
     }
+    if let Some(update) = &state.last_update_result {
+        lines.push("Update status".to_string());
+        lines.extend(update.lines().take(12).map(ToString::to_string));
+        lines.push(String::new());
+    }
     let Some(result) = &state.last_result else {
         if lines.is_empty() {
             lines.push("No run yet".to_string());
@@ -3944,6 +4710,10 @@ fn render_noninteractive_studio_snapshot(resolved: &ResolvedArgs) -> String {
         ),
         &format!("- iterations: {}", resolved.raw.iterations),
         &format!("- handoff: {}", on_off(resolved.raw.handoff)),
+        &format!(
+            "- handshake: {}",
+            on_off(handshake_requested(&resolved.raw))
+        ),
     ]
     .join("\n")
 }
@@ -4013,8 +4783,17 @@ fn cycle_summarizer(current: &str, delta: isize) -> String {
     cycle_value(current, &["auto", "codex", "claude", "gemini"], delta)
 }
 
+fn cycle_handshake_sub_agents(current: &str, delta: isize) -> String {
+    let values = ["auto", "0", "1", "2", "3", "5", "8", "13", "21"];
+    if values.contains(&current) {
+        return cycle_value(current, &values, delta);
+    }
+    let current = current.parse::<usize>().unwrap_or(DEFAULT_TEAM_SIZE);
+    adjust_number(current, delta, 0, 64).to_string()
+}
+
 fn settings_len() -> usize {
-    22
+    36
 }
 
 fn capabilities_len() -> usize {
@@ -4238,6 +5017,121 @@ mod tests {
     }
 
     #[test]
+    fn studio_exit_writes_resumable_state_and_agent_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut state = test_state("Ship the next patch");
+        state.artifacts = StudioArtifacts {
+            dir: temp.path().to_path_buf(),
+        };
+        apply_progress_event(
+            &mut state,
+            progress_event_with_context(
+                Some("codex"),
+                Some("planner:sub-agent-1"),
+                ProgressStage::Heartbeat,
+                Some("streaming"),
+                Some(1),
+                Some(2),
+                true,
+                None,
+                Some(TokenUsage {
+                    input: 10,
+                    output: 20,
+                    total: 30,
+                    estimated: false,
+                    source: "test".into(),
+                }),
+                vec![ToolUsage {
+                    name: "Bash".into(),
+                    kind: "tool".into(),
+                    status: "ok".into(),
+                    detail: "git status -sb".into(),
+                }],
+                "[amon-hen] stream codex planner:sub-agent-1 stdout: assistant live: patching",
+            ),
+        );
+        push_run_event(&mut state, "[studio] live planning note");
+
+        mark_studio_exit(&mut state, 130);
+
+        let snapshot: StudioStateSnapshot =
+            serde_json::from_str(&fs::read_to_string(temp.path().join("state.json")).unwrap())
+                .unwrap();
+        assert!(snapshot.exited);
+        assert_eq!(snapshot.exit_code, Some(130));
+        assert_eq!(snapshot.prompt, "Ship the next patch");
+        assert!(snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.provider == "codex" && agent.status == "streaming"));
+
+        let agents_text = fs::read_to_string(temp.path().join("agents.json")).unwrap();
+        let agents: StudioAgentsArtifact = serde_json::from_str(&agents_text).unwrap();
+        let planning = fs::read_to_string(temp.path().join("planning-artifacts.md")).unwrap();
+        let resume = fs::read_to_string(temp.path().join("resume.sh")).unwrap();
+        assert!(agents
+            .agents
+            .iter()
+            .any(|agent| agent
+                .sub_agents
+                .iter()
+                .any(|sub_agent| sub_agent.role == "planner:sub-agent-1"
+                    && sub_agent.token_usage.total == 30
+                    && sub_agent.tool_count == 1)));
+        assert!(planning.contains("Ship the next patch"));
+        assert!(planning.contains("live planning note"));
+        assert!(resume.contains("amon-hen --studio --resume"));
+        assert!(!resume.contains("CLAUDE_CODE_OAUTH_TOKEN"));
+    }
+
+    #[test]
+    fn studio_resume_restores_saved_prompt_and_agent_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut original = test_state("Original prompt");
+        original.artifacts = StudioArtifacts {
+            dir: temp.path().to_path_buf(),
+        };
+        original
+            .provider_status
+            .insert("claude".into(), "streaming".into());
+        original.live_token_usage.insert(
+            "claude".into(),
+            TokenUsage {
+                input: 111,
+                output: 222,
+                total: 333,
+                estimated: false,
+                source: "test".into(),
+            },
+        );
+        write_state_artifacts(&original, None, false);
+
+        let snapshot = read_studio_state_snapshot(temp.path()).unwrap();
+        let mut resumed = test_state("Different prompt");
+        resumed.artifacts = StudioArtifacts {
+            dir: temp.path().to_path_buf(),
+        };
+        apply_resume_snapshot(&mut resumed, snapshot);
+
+        assert_eq!(resumed.prompt, "Original prompt");
+        assert_eq!(
+            resumed.provider_status.get("claude").map(String::as_str),
+            Some("streaming")
+        );
+        assert_eq!(
+            resumed
+                .live_token_usage
+                .get("claude")
+                .map(|usage| usage.total),
+            Some(333)
+        );
+        assert!(resumed
+            .run_events
+            .iter()
+            .any(|line| line.contains("resumed from")));
+    }
+
+    #[test]
     fn studio_progress_lines_remove_stream_envelope_and_escapes() {
         let event = progress_event_with_context(
             Some("codex"),
@@ -4437,6 +5331,7 @@ mod tests {
             ),
             (StudioAction::LinearStatus, StudioJobKind::LinearStatus),
             (StudioAction::LinearDeliver, StudioJobKind::LinearDeliver),
+            (StudioAction::UpdateAmonHen, StudioJobKind::UpdateAmonHen),
         ];
 
         for (action, kind) in actions {
@@ -4590,6 +5485,7 @@ mod tests {
             )],
             members,
             summary,
+            consensus: None,
         }
     }
 
@@ -4675,6 +5571,7 @@ mod tests {
             last_linear_result: None,
             last_auth_result: None,
             last_capability_result: None,
+            last_update_result: None,
             run_job: None,
             run_events: VecDeque::new(),
             artifacts: StudioArtifacts::disabled(),
@@ -4686,6 +5583,10 @@ mod tests {
             live_token_usage: HashMap::new(),
             live_tool_counts: HashMap::new(),
             live_sub_agents: HashMap::new(),
+            live_agent_status: HashMap::new(),
+            live_agent_detail: HashMap::new(),
+            live_agent_token_usage: HashMap::new(),
+            live_agent_tool_counts: HashMap::new(),
             last_stream_log_at: HashMap::new(),
             live_assistant_lines: HashMap::new(),
             status: "Ready".to_string(),

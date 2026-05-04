@@ -20,7 +20,7 @@
 
 ## What This Is
 
-Amon Hen turns local AI coding CLIs into a coordinated delivery team. Codex can plan, Claude can lead, Gemini can execute, and each provider can spawn its own same-provider sub-agents when the task needs more hands. You get one native terminal surface for roles, handoffs, iterations, auth, provider capability overrides, token telemetry, tool logs, local files, command context, and Linear delivery.
+Amon Hen turns local AI coding CLIs into a coordinated delivery team. Codex can plan, Claude can lead, Gemini can execute, and one provider can now run separate planner, executor, and reviewer agents for a true single-model handshake. Each provider can also spawn its own same-provider sub-agents when the task needs more hands. You get one native terminal surface for roles, handoffs, iterations, auth, provider capability overrides, token telemetry, tool logs, local files, command context, and Linear delivery.
 
 This is a ground-up Rust implementation. The CLI and delivery runtime live in the Cargo workspace.
 
@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen --version 0.1.25 --force
+cargo install amon-hen --version 0.1.26 --force
 ```
 
 From a checkout:
@@ -54,6 +54,15 @@ AMON_HEN_CLAUDE_BIN=/path/to/claude \
 AMON_HEN_GEMINI_BIN=/path/to/gemini \
 amon-hen --auth-status --capabilities-status
 ```
+
+Amon Hen checks crates.io for newer releases on interactive startup, caches that result briefly, and prints the changelog only when an update is available. Update from the terminal:
+
+```bash
+amon-hen --check-update
+amon-hen --update
+```
+
+Use `--no-update-check` for CI, scripts, or runs where startup must stay completely quiet. Operators can replace the default updater with `AMON_HEN_UPDATE_COMMAND`.
 
 ## Command Cookbook
 
@@ -81,6 +90,16 @@ amon-hen \
   --lead claude \
   --summarizer claude \
   --handoff \
+  --consensus required \
+  --consensus-reviewers codex,claude,gemini \
+  --failure-policy takeover \
+  --review-rounds 3 \
+  --require-final-diff-review \
+  --require-tests \
+  --require-secret-scan \
+  --require-clean-git-diff \
+  --stop-when consensus \
+  --owner-map strict \
   --iterations 10 \
   --team-work 2 \
   --codex-sub-agents 3 \
@@ -89,7 +108,32 @@ amon-hen \
   "Design, implement, verify, and summarize the next safe change"
 ```
 
-Use `--planner-mode blocking` when executor prompts should wait for a planner handoff first. Use `--planner-mode parallel` when the planner/lead should run alongside the executors in the same iteration. Use `--planner-mode review-chain` for production/race-sensitive work: members run one after another, and each agent reviews the previous agent handoff plus the current repo state before making deliberate changes.
+Use `--planner-mode blocking` when executor prompts should wait for a planner handoff first. Use `--planner-mode parallel` when the planner/lead should run alongside the executors in the same iteration. Use `--planner-mode review-chain` for production/race-sensitive work: members run one after another, and each agent reviews the previous agent handoff plus the current repo state before making deliberate changes. Use `--planner-mode handshake` or `--handshake` when you want explicit planner -> executor -> reviewer agent slots, including multiple agents backed by the same provider/model.
+
+Run a full three-way handshake with one model:
+
+```bash
+amon-hen \
+  --handshake \
+  --handshake-provider codex \
+  --handshake-sub-agents 5 \
+  --codex-model gpt-5.5 \
+  --codex-effort xhigh \
+  --iterations 3 \
+  "Plan the patch, execute it, then review it as separate Codex-backed agents"
+```
+
+Declare the handshake yourself when the roles need different providers or sub-agent counts. Use repeated `--handshake-agent` flags or one comma-list via `--handshake-agents`:
+
+```bash
+amon-hen \
+  --handshake-agent planner=codex:3 \
+  --handshake-agent executor=codex:8 \
+  --handshake-agent reviewer=claude:2 \
+  --planner-mode handshake \
+  --handoff \
+  "Create the plan, implement it, and block unless the reviewer signs off"
+```
 
 Keep long review loops under provider prompt limits:
 
@@ -236,10 +280,20 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
 
 Studio also writes native diagnostics into `$AMON_HEN_RUN_DIR` when that environment variable is set, or `.amon-hen/runs/<run-id>/` inside the working repo otherwise:
 
+- `state.json` is the resumable Studio snapshot: prompt, workflow, provider status, token/tool counts, sub-agent state, and the latest result when present.
+- `agents.json` keeps the per-provider and per-sub-agent state in a compact machine-readable file.
+- `planning-artifacts.md` preserves the prompt, tagged files, commands, workflow, handoff context, summary context, and live planning tail.
 - `studio.log` keeps the readable Studio run log outside the alternate screen.
 - `events.ndjson` keeps structured provider progress, token, tool, and status events.
 - `result.json` and `summary.txt` are written when a run reaches a final result.
 - `last-error.txt` is written when Studio detects a crash, cancellation, disconnected worker, failed prompt context, or failed external action.
+- `resume.sh` contains a secret-free reopen command.
+
+Resume a saved Studio session:
+
+```bash
+amon-hen --studio --resume "$AMON_HEN_RUN_DIR"
+```
 
 ![Amon Hen command line](docs/screenshots/terminal-run.svg)
 
@@ -251,13 +305,41 @@ Studio is the native TUI for live work:
 - manual auth method selection per provider
 - browser-tab social login handoff with code paste or deeplink support
 - lead/planner/executor role changes after launch
-- `blocking`, `parallel`, or `review-chain` planner mode
+- `blocking`, `parallel`, `review-chain`, or single-model `handshake` planner mode
+- fail-closed consensus gates with reviewer rosters, takeover policy, review rounds, required tests, final diff review, secret scan, and strict ownership review
 - per-provider model, effort, sandbox, permissions, and capability settings
 - provider Skills, MCP, and tools inherit/override toggles
 - token, sub-agent, prompt-command, provider-stream, and tool-command telemetry
+- resumable state on exit with `state.json`, `agents.json`, `planning-artifacts.md`, and `--resume`
+- startup update checks, changelog notices, and in-Studio terminal self-update
 - readable Claude, Codex, and Gemini stream decoding instead of raw provider JSON
 - stable Results scrolling with mouse wheel, `PageUp`/`PageDown`, `Home`, `End`, and sticky live-tail mode
 - double-Ctrl+C exit so one accidental interrupt does not kill a long run
+
+Consensus mode turns review into a required gate instead of a vibe check:
+
+```bash
+amon-hen \
+  --members codex,claude,gemini \
+  --planner codex \
+  --planner-mode review-chain \
+  --lead claude \
+  --summarizer auto \
+  --handoff \
+  --consensus required \
+  --consensus-reviewers codex,claude,gemini \
+  --failure-policy takeover \
+  --review-rounds 3 \
+  --require-final-diff-review \
+  --require-tests \
+  --require-secret-scan \
+  --require-clean-git-diff \
+  --stop-when consensus \
+  --owner-map strict \
+  "Implement the plan, then block unless reviewers agree with evidence"
+```
+
+When enabled, each iteration runs a serial reviewer loop. Reviewers see agent outputs, failed-agent context, prior review handoffs, test/diff/secret-scan evidence, and must end with `CONSENSUS: approve` or the run is blocked. `--failure-policy takeover` requires a successful reviewer to explicitly take over any failed provider before consensus can pass.
 
 ## Linear Delivery
 

@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen --version 0.1.25 --force
+cargo install amon-hen --version 0.1.26 --force
 amon-hen --help
 ```
 
@@ -41,7 +41,18 @@ Open the native interactive Studio:
 amon-hen --studio --members codex,claude,gemini
 ```
 
-Studio gives you selectable panes for settings, agents, auth, Linear, files, tools, provider capabilities, token usage, command logs, and help. It supports role changes after launch, manual provider auth method selection, browser-tab social login handoff, file tagging, command tagging, per-provider capability overrides, readable provider stream decoding, stable Results scrolling with sticky live-tail mode, and double-Ctrl+C exit.
+Studio gives you selectable panes for settings, agents, auth, Linear, files, tools, provider capabilities, token usage, command logs, updates, and help. It supports role changes after launch, single-model planner/executor/reviewer handshakes, manual provider auth method selection, browser-tab social login handoff, file tagging, command tagging, per-provider capability overrides, readable provider stream decoding, startup update notices with changelog excerpts, in-dashboard terminal self-update, stable Results scrolling with sticky live-tail mode, and double-Ctrl+C exit.
+
+## Updates
+
+Interactive terminal runs check crates.io for newer releases at startup and print a changelog excerpt only when an update exists. The check is cached briefly so normal startup stays snappy.
+
+```bash
+amon-hen --check-update
+amon-hen --update
+```
+
+`--update` runs `cargo install amon-hen --force` by default. Set `AMON_HEN_UPDATE_COMMAND` when a host needs a pinned mirror, internal registry, or git install command. Use `--no-update-check` in CI, scripts, or any run that must stay silent.
 
 ## Basic Runs
 
@@ -76,6 +87,16 @@ amon-hen \
   --lead claude \
   --summarizer claude \
   --handoff \
+  --consensus required \
+  --consensus-reviewers codex,claude,gemini \
+  --failure-policy takeover \
+  --review-rounds 3 \
+  --require-final-diff-review \
+  --require-tests \
+  --require-secret-scan \
+  --require-clean-git-diff \
+  --stop-when consensus \
+  --owner-map strict \
   --iterations 10 \
   --team-work 2 \
   --codex-sub-agents 3 \
@@ -89,6 +110,32 @@ Planner modes:
 - `--planner-mode blocking` waits for the planner output before executor prompts are built. This is the default and is best when you want a true planner handoff first.
 - `--planner-mode parallel` starts the planner/lead in the same iteration as the executors. This is best when Claude leads/plans but Codex and Gemini should not sit queued.
 - `--planner-mode review-chain` runs members serially in planner/lead order. Each provider reviews the previous provider's handoff and the current repo state before making deliberate deltas, which is the safer mode for production VPS work.
+- `--planner-mode handshake` or `--handshake` creates explicit planner -> executor -> reviewer agent slots. Those slots can all use the same provider/model, or you can declare each role yourself.
+
+Run a full three-way handshake with one model:
+
+```bash
+amon-hen \
+  --handshake \
+  --handshake-provider codex \
+  --handshake-sub-agents 5 \
+  --codex-model gpt-5.5 \
+  --codex-effort xhigh \
+  --iterations 3 \
+  "Plan the patch, execute it, then review it as separate Codex-backed agents"
+```
+
+Declare the handshake yourself when the roles need different providers or sub-agent counts. Use repeated `--handshake-agent` flags or one comma-list via `--handshake-agents`:
+
+```bash
+amon-hen \
+  --handshake-agent planner=codex:3 \
+  --handshake-agent executor=codex:8 \
+  --handshake-agent reviewer=claude:2 \
+  --planner-mode handshake \
+  --handoff \
+  "Create the plan, implement it, and block unless the reviewer signs off"
+```
 
 Keep iterative runs under provider prompt limits:
 
@@ -318,10 +365,45 @@ script -q -f "$AMON_HEN_RUN_DIR/studio.typescript" -c "amon-hen \
 
 The terminal recording is written to `$AMON_HEN_RUN_DIR/studio.typescript`. Studio also writes native diagnostics into the same directory, or `.amon-hen/runs/<run-id>/` inside the working repo when `AMON_HEN_RUN_DIR` is not set:
 
+- `state.json` is the resumable Studio snapshot: prompt, workflow, provider status, token/tool counts, sub-agent state, and the latest result when present.
+- `agents.json` keeps the per-provider and per-sub-agent state in a compact machine-readable file.
+- `planning-artifacts.md` preserves the prompt, tagged files, commands, workflow, handoff context, summary context, and live planning tail.
 - `studio.log` keeps the readable Studio run log outside the alternate screen.
 - `events.ndjson` keeps structured provider progress, token, tool, and status events.
 - `result.json` and `summary.txt` are written when a run reaches a final result.
 - `last-error.txt` is written when Studio detects a crash, cancellation, disconnected worker, failed prompt context, or failed external action.
+- `resume.sh` contains a secret-free reopen command.
+
+Resume a saved Studio session:
+
+```bash
+amon-hen --studio --resume "$AMON_HEN_RUN_DIR"
+```
+
+Consensus mode makes review fail-closed:
+
+```bash
+amon-hen \
+  --members codex,claude,gemini \
+  --planner codex \
+  --planner-mode review-chain \
+  --lead claude \
+  --summarizer auto \
+  --handoff \
+  --consensus required \
+  --consensus-reviewers codex,claude,gemini \
+  --failure-policy takeover \
+  --review-rounds 3 \
+  --require-final-diff-review \
+  --require-tests \
+  --require-secret-scan \
+  --require-clean-git-diff \
+  --stop-when consensus \
+  --owner-map strict \
+  "Implement the plan, then block unless reviewers agree with evidence"
+```
+
+Each consensus round runs the configured reviewers in sequence. Reviewers receive the current agent outputs, failed-agent context, prior reviewer handoffs, and required evidence checks. A required consensus run only succeeds when every reviewer returns `CONSENSUS: approve`, required checks pass, and failed agents have explicit takeover under `--failure-policy takeover`.
 
 ## Development Checks
 
