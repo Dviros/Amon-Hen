@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.21
+
+- Fixed Studio Results scrolling: mouse wheel events are now captured by the TUI instead of disturbing the terminal buffer.
+- Added stable Results scroll state with sticky live-tail mode, manual scroll lock, `PageUp`/`PageDown`, `Home`, and `End`.
+- Render Results lines as one terminal row each so wrapped provider output no longer breaks viewport math while agents stream.
+
 ## 0.1.20
 
 - Added `--planner-mode review-chain` for race-sensitive work: Amon Hen runs members serially in planner/lead order and feeds each agent the previous agent handoff as review context.

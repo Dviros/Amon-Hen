@@ -36,7 +36,7 @@ This is a ground-up Rust implementation. The CLI and delivery runtime live in th
 ## Install
 
 ```bash
-cargo install amon-hen --version 0.1.20 --force
+cargo install amon-hen --version 0.1.21 --force
 ```
 
 From a checkout:
@@ -232,6 +232,7 @@ Studio is the native TUI for live work:
 - provider Skills, MCP, and tools inherit/override toggles
 - token, sub-agent, prompt-command, provider-stream, and tool-command telemetry
 - readable Claude, Codex, and Gemini stream decoding instead of raw provider JSON
+- stable Results scrolling with mouse wheel, `PageUp`/`PageDown`, `Home`, `End`, and sticky live-tail mode
 - double-Ctrl+C exit so one accidental interrupt does not kill a long run
 
 ## Linear Delivery

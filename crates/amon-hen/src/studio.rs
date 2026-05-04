@@ -1,6 +1,9 @@
 use super::*;
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::style::force_color_output;
 use crossterm::terminal::{
@@ -14,6 +17,7 @@ use ratatui::widgets::{
     Block, BorderType, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap,
 };
 use ratatui::{Frame, Terminal};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -44,6 +48,7 @@ const IDLE_STUDIO_POLL: Duration = Duration::from_millis(160);
 const MAX_STUDIO_MESSAGES_PER_TICK: usize = 96;
 const MAX_RUN_EVENTS: usize = 320;
 const STREAM_LOG_MIN_INTERVAL: Duration = Duration::from_millis(250);
+const MOUSE_SCROLL_LINES: usize = 4;
 
 const PANES: [Pane; 6] = [
     Pane::Menu,
@@ -106,7 +111,9 @@ struct StudioState {
     setting_index: usize,
     capability_index: usize,
     linear_index: usize,
-    result_index: usize,
+    result_scroll: usize,
+    result_follow_tail: bool,
+    result_view_rows: Cell<usize>,
     last_result: Option<AmonHenResult>,
     last_linear_result: Option<String>,
     last_auth_result: Option<String>,
@@ -315,6 +322,7 @@ impl TerminalGuard {
         execute!(
             io::stderr(),
             EnterAlternateScreen,
+            EnableMouseCapture,
             Hide,
             Clear(ClearType::All)
         )
@@ -328,6 +336,7 @@ impl Drop for TerminalGuard {
         let _ = execute!(
             io::stderr(),
             Show,
+            DisableMouseCapture,
             LeaveAlternateScreen,
             Clear(ClearType::All)
         );
@@ -352,7 +361,9 @@ pub(super) fn run_studio(resolved: &ResolvedArgs) -> i32 {
         setting_index: 0,
         capability_index: 0,
         linear_index: 0,
-        result_index: 0,
+        result_scroll: 0,
+        result_follow_tail: true,
+        result_view_rows: Cell::new(1),
         last_result: None,
         last_linear_result: None,
         last_auth_result: None,
@@ -489,6 +500,8 @@ fn start_studio_run(state: &mut StudioState) {
     state.live_sub_agents.clear();
     state.last_stream_log_at.clear();
     state.live_assistant_lines.clear();
+    state.result_scroll = 0;
+    state.result_follow_tail = true;
     state.last_result = None;
     state.status = "Amon Hen running inside Studio".to_string();
     state.focus = Pane::Results;
@@ -971,6 +984,7 @@ fn drain_studio_job(state: &mut StudioState) {
                 state.last_result = Some(result);
                 state.focus = Pane::Results;
                 push_run_event(state, "[studio] run finished");
+                clamp_result_scroll(state);
                 finished = true;
             }
             StudioJobMessage::ExternalFinished(outcome) => {
@@ -1099,7 +1113,11 @@ fn upsert_live_assistant_event(state: &mut StudioState, event: &LiveAssistantEve
     if let Some(index) = state.live_assistant_lines.get(&event.key).copied() {
         if let Some(slot) = state.run_events.get_mut(index) {
             *slot = line;
-            state.result_index = result_len(state).saturating_sub(1);
+            if result_tail_locked(state) {
+                set_results_to_tail(state);
+            } else {
+                clamp_result_scroll(state);
+            }
             return;
         }
     }
@@ -1110,6 +1128,7 @@ fn upsert_live_assistant_event(state: &mut StudioState, event: &LiveAssistantEve
 }
 
 fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
+    let was_tail_locked = result_tail_locked(state);
     state.run_events.push_back(studio_clip(&line.into(), 240));
     if state.run_events.len() > MAX_RUN_EVENTS {
         let overflow = state.run_events.len() - MAX_RUN_EVENTS;
@@ -1124,8 +1143,15 @@ fn push_run_event(state: &mut StudioState, line: impl Into<String>) {
                 }
             });
         }
+        if !was_tail_locked {
+            state.result_scroll = state.result_scroll.saturating_sub(overflow);
+        }
     }
-    state.result_index = result_len(state).saturating_sub(1);
+    if was_tail_locked {
+        set_results_to_tail(state);
+    } else {
+        clamp_result_scroll(state);
+    }
 }
 
 fn should_log_progress_event(state: &mut StudioState, event: &ProgressEvent) -> bool {
@@ -1151,8 +1177,10 @@ fn should_log_progress_event(state: &mut StudioState, event: &ProgressEvent) -> 
 }
 
 fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, String> {
-    let Event::Key(key) = event else {
-        return Ok(StudioAction::None);
+    let key = match event {
+        Event::Key(key) => key,
+        Event::Mouse(mouse) => return handle_mouse_event(state, mouse),
+        _ => return Ok(StudioAction::None),
     };
     if let Some(mode) = state.input_mode.clone() {
         return handle_input_event(state, key, mode);
@@ -1178,12 +1206,37 @@ fn handle_event(state: &mut StudioState, event: Event) -> Result<StudioAction, S
         KeyCode::BackTab => cycle_focus(state, -1),
         KeyCode::Char('[') => move_focused_pane(state, -1),
         KeyCode::Char(']') => move_focused_pane(state, 1),
+        KeyCode::Up if state.focus == Pane::Results => scroll_results(state, -1, 1),
+        KeyCode::Down if state.focus == Pane::Results => scroll_results(state, 1, 1),
+        KeyCode::PageUp if state.focus == Pane::Results => {
+            scroll_results(state, -1, results_page_size(state))
+        }
+        KeyCode::PageDown if state.focus == Pane::Results => {
+            scroll_results(state, 1, results_page_size(state))
+        }
+        KeyCode::Home if state.focus == Pane::Results => scroll_results_to_start(state),
+        KeyCode::End if state.focus == Pane::Results => scroll_results_to_tail(state),
         KeyCode::Up => move_selection(state, -1),
         KeyCode::Down => move_selection(state, 1),
         KeyCode::Left => adjust_selection(state, -1)?,
         KeyCode::Right => adjust_selection(state, 1)?,
         KeyCode::Enter => return activate_selection(state),
         KeyCode::Esc => state.show_help = false,
+        _ => {}
+    }
+    Ok(StudioAction::None)
+}
+
+fn handle_mouse_event(state: &mut StudioState, mouse: MouseEvent) -> Result<StudioAction, String> {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            state.focus = Pane::Results;
+            scroll_results(state, -1, MOUSE_SCROLL_LINES);
+        }
+        MouseEventKind::ScrollDown => {
+            state.focus = Pane::Results;
+            scroll_results(state, 1, MOUSE_SCROLL_LINES);
+        }
         _ => {}
     }
     Ok(StudioAction::None)
@@ -1714,11 +1767,67 @@ fn move_selection(state: &mut StudioState, delta: isize) {
             state.capability_index = wrap_index(state.capability_index, capabilities_len(), delta)
         }
         Pane::Linear => state.linear_index = wrap_index(state.linear_index, linear_len(), delta),
-        Pane::Results => {
-            state.result_index = wrap_index(state.result_index, result_len(state), delta)
-        }
+        Pane::Results => scroll_results(state, delta, 1),
         Pane::Agents => {}
     }
+}
+
+fn results_page_size(state: &StudioState) -> usize {
+    state.result_view_rows.get().saturating_sub(1).max(1)
+}
+
+fn max_result_scroll(state: &StudioState) -> usize {
+    result_len(state).saturating_sub(state.result_view_rows.get().max(1))
+}
+
+fn result_tail_locked(state: &StudioState) -> bool {
+    state.result_follow_tail || state.result_scroll >= max_result_scroll(state)
+}
+
+fn clamp_result_scroll(state: &mut StudioState) {
+    let max_scroll = max_result_scroll(state);
+    if state.result_follow_tail {
+        state.result_scroll = max_scroll;
+    } else {
+        state.result_scroll = state.result_scroll.min(max_scroll);
+    }
+}
+
+fn scroll_results(state: &mut StudioState, delta: isize, amount: usize) {
+    let max_scroll = max_result_scroll(state);
+    let current = if state.result_follow_tail {
+        max_scroll
+    } else {
+        state.result_scroll.min(max_scroll)
+    };
+    let next = if delta < 0 {
+        current.saturating_sub(amount)
+    } else {
+        current.saturating_add(amount).min(max_scroll)
+    };
+    state.result_scroll = next;
+    state.result_follow_tail = next >= max_scroll;
+    state.status = if state.result_follow_tail {
+        "Results following live tail".to_string()
+    } else {
+        "Results scroll locked; press End to follow live tail".to_string()
+    };
+}
+
+fn scroll_results_to_start(state: &mut StudioState) {
+    state.result_scroll = 0;
+    state.result_follow_tail = false;
+    state.status = "Results scrolled to top; press End to follow live tail".to_string();
+}
+
+fn scroll_results_to_tail(state: &mut StudioState) {
+    set_results_to_tail(state);
+    state.status = "Results following live tail".to_string();
+}
+
+fn set_results_to_tail(state: &mut StudioState) {
+    state.result_follow_tail = true;
+    clamp_result_scroll(state);
 }
 
 fn adjust_selection(state: &mut StudioState, delta: isize) -> Result<(), String> {
@@ -2716,30 +2825,37 @@ fn render_token_and_tools(frame: &mut Frame<'_>, area: Rect, state: &StudioState
 fn render_results_panel(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
     let raw_lines = result_lines(state);
     let available = area.height.saturating_sub(2) as usize;
-    let visible = visible_lines(&raw_lines, state.result_index, available);
+    state.result_view_rows.set(available.max(1));
+    let max_scroll = raw_lines.len().saturating_sub(available.max(1));
+    let scroll = if state.result_follow_tail {
+        max_scroll
+    } else {
+        state.result_scroll.min(max_scroll)
+    };
+    let visible = result_window(&raw_lines, scroll, available);
     let lines = visible
         .into_iter()
-        .map(|(index, line)| {
-            let style = if state.focus == Pane::Results && index == state.result_index {
-                strong(STUDIO_ACCENT)
-            } else if line.contains("[ok]") {
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            let style = if line.contains("[ok]") {
                 strong(STUDIO_GREEN)
-            } else if line.contains("[err]") || line.contains("failed") {
+            } else if line.contains("[err]") || lower.contains("failed") || lower.contains("error")
+            {
                 strong(STUDIO_RED)
+            } else if lower.contains("assistant live:") || lower.contains("assistant:") {
+                strong(STUDIO_ACCENT)
             } else {
                 Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL)
             };
-            Line::from(Span::styled(line, style))
+            let line_width = area.width.saturating_sub(4) as usize;
+            Line::from(Span::styled(studio_clip(&line, line_width), style))
         })
         .collect::<Vec<_>>();
+    let title = results_panel_title(raw_lines.len(), scroll, available, state.result_follow_tail);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel_block(
-                "Results and execution log",
-                state.focus == Pane::Results,
-            ))
-            .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL))
-            .wrap(Wrap { trim: false }),
+            .block(panel_block(title, state.focus == Pane::Results))
+            .style(Style::default().fg(STUDIO_TEXT).bg(STUDIO_PANEL)),
         area,
     );
 }
@@ -2805,6 +2921,9 @@ fn render_configuration(frame: &mut Frame<'_>, area: Rect, state: &StudioState) 
         vec![
             Line::from("Tab cycles panels. Up/Down selects."),
             Line::from("Left/Right changes toggles and numeric values."),
+            Line::from(
+                "Results: wheel or Up/Down scrolls; PageUp/PageDown jumps; End follows live tail.",
+            ),
             Line::from("Enter edits paths, lists, prompts, and Linear filters."),
             Line::from("r runs, c cancels the active job, e edits prompt."),
             Line::from("? toggles help."),
@@ -2886,6 +3005,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &StudioState) {
         Span::raw(" edit/activate  "),
         Span::styled("?", strong(STUDIO_GOLD)),
         Span::raw(" help  "),
+        Span::styled("End", strong(STUDIO_GOLD)),
+        Span::raw(" tail  "),
         Span::styled("Ctrl+C twice", strong(STUDIO_GOLD)),
         Span::raw(" quit"),
     ]);
@@ -3169,6 +3290,31 @@ fn visible_lines(lines: &[String], selected: usize, available_rows: usize) -> Ve
         .take(window)
         .map(|(index, line)| (index, line.clone()))
         .collect()
+}
+
+fn result_window(lines: &[String], scroll: usize, available_rows: usize) -> Vec<String> {
+    if lines.is_empty() || available_rows == 0 {
+        return Vec::new();
+    }
+    let window = available_rows.min(lines.len());
+    let start = scroll.min(lines.len().saturating_sub(window));
+    lines.iter().skip(start).take(window).cloned().collect()
+}
+
+fn results_panel_title(
+    total_lines: usize,
+    scroll: usize,
+    available_rows: usize,
+    follow_tail: bool,
+) -> String {
+    if total_lines <= available_rows.max(1) {
+        return "Results and execution log".to_string();
+    }
+    let window = available_rows.max(1).min(total_lines);
+    let start = scroll.min(total_lines.saturating_sub(window));
+    let end = (start + window).min(total_lines);
+    let mode = if follow_tail { "tail" } else { "manual" };
+    format!("Results and execution log {}/{} {mode}", end, total_lines)
 }
 
 fn config_list_item(line: String, selected: bool) -> ListItem<'static> {
@@ -3596,12 +3742,7 @@ fn linear_len() -> usize {
 }
 
 fn result_len(state: &StudioState) -> usize {
-    let result_lines = state
-        .last_result
-        .as_ref()
-        .map(|result| result.members.len() + 2)
-        .unwrap_or(1);
-    result_lines + state.run_events.len()
+    result_lines(state).len()
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -3857,6 +3998,62 @@ mod tests {
     }
 
     #[test]
+    fn results_scroll_does_not_snap_back_to_tail_while_reading() {
+        let mut state = test_state("hello");
+        state.focus = Pane::Results;
+        state.result_view_rows.set(5);
+        for index in 0..20 {
+            push_run_event(&mut state, format!("line {index}"));
+        }
+        assert!(state.result_follow_tail);
+        assert!(state.result_scroll > 0);
+
+        scroll_results(&mut state, -1, 3);
+        let manual_scroll = state.result_scroll;
+        assert!(!state.result_follow_tail);
+
+        push_run_event(&mut state, "new tail line");
+
+        assert_eq!(state.result_scroll, manual_scroll);
+        assert!(!state.result_follow_tail);
+        let (rendered, _) = render_to_string(&state, 140, 30);
+        assert!(rendered.contains("manual"));
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_results_inside_the_dashboard() {
+        let mut state = test_state("hello");
+        state.result_view_rows.set(5);
+        for index in 0..20 {
+            push_run_event(&mut state, format!("line {index}"));
+        }
+
+        let action = handle_event(
+            &mut state,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 10,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            }),
+        )
+        .unwrap();
+
+        assert!(matches!(action, StudioAction::None));
+        assert_eq!(state.focus, Pane::Results);
+        assert!(!state.result_follow_tail);
+
+        let action = handle_event(
+            &mut state,
+            Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        )
+        .unwrap();
+
+        assert!(matches!(action, StudioAction::None));
+        assert!(state.result_follow_tail);
+    }
+
+    #[test]
     fn studio_actions_are_dashboard_jobs() {
         let actions = [
             (StudioAction::RunAmonHen, StudioJobKind::AmonHen),
@@ -4099,7 +4296,9 @@ mod tests {
             setting_index: 0,
             capability_index: 0,
             linear_index: 0,
-            result_index: 0,
+            result_scroll: 0,
+            result_follow_tail: true,
+            result_view_rows: Cell::new(1),
             last_result: None,
             last_linear_result: None,
             last_auth_result: None,

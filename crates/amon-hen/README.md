@@ -7,7 +7,7 @@ Amon Hen is a native Rust command center for Codex, Claude, Gemini, and Linear d
 From crates.io:
 
 ```bash
-cargo install amon-hen --version 0.1.20 --force
+cargo install amon-hen --version 0.1.21 --force
 amon-hen --help
 ```
 
@@ -41,7 +41,7 @@ Open the native interactive Studio:
 amon-hen --studio --members codex,claude,gemini
 ```
 
-Studio gives you selectable panes for settings, agents, auth, Linear, files, tools, provider capabilities, token usage, command logs, and help. It supports role changes after launch, manual provider auth method selection, browser-tab social login handoff, file tagging, command tagging, per-provider capability overrides, readable provider stream decoding, and double-Ctrl+C exit.
+Studio gives you selectable panes for settings, agents, auth, Linear, files, tools, provider capabilities, token usage, command logs, and help. It supports role changes after launch, manual provider auth method selection, browser-tab social login handoff, file tagging, command tagging, per-provider capability overrides, readable provider stream decoding, stable Results scrolling with sticky live-tail mode, and double-Ctrl+C exit.
 
 ## Basic Runs
 
